@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -317,6 +318,9 @@ func TestVerifyWritesNothing(t *testing.T) {
 }
 
 func TestExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no executable bit")
+	}
 	f := newFakeBuild(t)
 	dir := t.TempDir()
 	if _, err := f.run(t, dir, nil); err != nil {

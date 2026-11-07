@@ -20,6 +20,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -407,8 +408,8 @@ func (r *run) looseFiles(ctx context.Context, idx []namedIndex, inst *tact.Insta
 		j := jobs[i]
 		data, err := os.ReadFile(j.path)
 		if err == nil && tact.KeyOf(data) == j.e.CKey {
-			// Right bytes; programs must also still be executable.
-			if mode := modeFor(data); mode&0o111 != 0 {
+			// Right bytes; programs must also still be executable (Windows has no executable bit).
+			if mode := modeFor(data); mode&0o111 != 0 && runtime.GOOS != "windows" {
 				if st, err := os.Stat(j.path); err == nil && st.Mode().Perm()&0o111 == 0 {
 					if r.Verify {
 						r.problem(j.path+" (not executable)", true)
