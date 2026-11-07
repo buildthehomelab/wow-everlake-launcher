@@ -14,7 +14,8 @@ Work in progress. What works today:
 - `install` fetches the pinned build's configs, archive indexes, encoding file, install and download manifests, then
   the loose game files for your platform (the `.app` or `Wow.exe` and friends) and the data files, checking each
   one.
-- `verify` re-checks everything on disk and lists what's damaged or missing; `install` again repairs exactly those.
+- `verify` re-checks what the install fetched (it reads `.everlake/install.json`), writes nothing, and lists what's
+  damaged or missing; `install` again repairs exactly those.
 - The data files are **staged** (still encoded, checked) in `.everlake/staged/`. Writing them into the game's own
   data storage (`Data/data`: `data.NNN` + `.idx`) is the next step, so **the game can't start from this folder yet.**
 
