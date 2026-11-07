@@ -227,6 +227,9 @@ func TestLeftoverArchiveRemoved(t *testing.T) {
 	s.w.WriteAt([]byte("half a file"), 0)
 	leftover := s.archivePath(s.wNum)
 	s.w.Close()
+	for _, f := range s.readers { // a killed process leaves no open handles; Windows can't delete open files
+		f.Close()
+	}
 	s.mu.Unlock()
 	// A client archive nobody points at is left alone.
 	client := filepath.Join(data, "data.099")
