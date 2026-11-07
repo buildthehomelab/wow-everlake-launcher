@@ -252,6 +252,9 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 		if err := r.writeBuildInfo(inst); err != nil {
 			return nil, err
 		}
+		if err := r.writeFlavorInfo(); err != nil {
+			return nil, err
+		}
 		if err := r.writeState(); err != nil {
 			return nil, err
 		}
@@ -368,6 +371,11 @@ func locate(idx []namedIndex, want map[tact.Key]*where) {
 
 // --- .build.info --------------------------------------------------------------------------------------------------
 
+// writeFlavorInfo writes <game folder>/.flavor.info.
+func (r *run) writeFlavorInfo() error {
+	return writeFile(filepath.Join(r.Dir, r.Pin.GameFolder, ".flavor.info"), flavorInfo(r.Pin), 0o644)
+}
+
 // writeBuildInfo writes .build.info, after a complete install. It names GameHosts (Blizzard's), not a mirror the
 // install may have used.
 func (r *run) writeBuildInfo(inst *tact.Install) error {
@@ -379,8 +387,12 @@ func (r *run) writeBuildInfo(inst *tact.Install) error {
 		0o644)
 }
 
-// checkBuildInfo reports .build.info if it's missing or names another build.
+// checkBuildInfo reports .build.info if it's missing or names another build, and .flavor.info if it isn't the pin's.
 func (r *run) checkBuildInfo() {
+	fp := filepath.Join(r.Dir, r.Pin.GameFolder, ".flavor.info")
+	if data, err := os.ReadFile(fp); err != nil || !bytes.Equal(bytes.ReplaceAll(data, []byte("\r"), nil), flavorInfo(r.Pin)) {
+		r.problem(fp, err == nil)
+	}
 	p := filepath.Join(r.Dir, ".build.info")
 	data, err := os.ReadFile(p)
 	row := "|" + r.Pin.BuildConfig + "|" + r.Pin.CDNConfig + "|"

@@ -31,7 +31,11 @@ type Pin struct {
 	CDNPath     string   `json:"cdn_path"`     // e.g. tpr/wow
 	CDNHosts    []string `json:"cdn_hosts"`    // fallback hosts when the version server can't be asked
 	GameFolder  string   `json:"game_folder"`  // where the game's loose files go, e.g. _forever_
-	Note        string   `json:"note,omitempty"`
+	// Flavor is what <game folder>/.flavor.info names (Battle.net writes it; it's in no manifest). The game picks
+	// its tables by it: without it, the Forever client (internal name Camelot) took itself for retail and failed
+	// on retail's tables. Forever's is wow_camelot.
+	Flavor string `json:"flavor"`
+	Note   string `json:"note,omitempty"`
 }
 
 // Default is the pin compiled into this launcher.
@@ -54,8 +58,8 @@ func Parse(data []byte) (Pin, error) {
 
 // Check reports the first missing or malformed field.
 func (p Pin) Check() error {
-	if p.Product == "" || p.Region == "" || p.CDNPath == "" || p.GameFolder == "" {
-		return fmt.Errorf("pin needs product, region, cdn_path and game_folder")
+	if p.Product == "" || p.Region == "" || p.CDNPath == "" || p.GameFolder == "" || p.Flavor == "" {
+		return fmt.Errorf("pin needs product, region, cdn_path, game_folder and flavor")
 	}
 	if _, err := tact.ParseKey(p.BuildConfig); err != nil {
 		return fmt.Errorf("pin build_config: %w", err)
@@ -103,7 +107,7 @@ func appendNew(list []string, s string) []string {
 
 // Live reads the build the version server offers for a product now, as a pin. It is how a new pin is proposed;
 // the launcher itself never follows the live build.
-func Live(ctx context.Context, product, region, gameFolder string) (Pin, error) {
+func Live(ctx context.Context, product, region, gameFolder, flavor string) (Pin, error) {
 	v, err := cdn.Table(ctx, cdn.VersionServer, product, "versions", region)
 	if err != nil {
 		return Pin{}, err
@@ -116,7 +120,7 @@ func Live(ctx context.Context, product, region, gameFolder string) (Pin, error) 
 	p := Pin{
 		Product: product, Region: region, Version: v["VersionsName"], BuildID: id,
 		BuildConfig: v["BuildConfig"], CDNConfig: v["CDNConfig"], CDNPath: c["Path"],
-		CDNHosts: strings.Fields(c["Hosts"]), GameFolder: gameFolder,
+		CDNHosts: strings.Fields(c["Hosts"]), GameFolder: gameFolder, Flavor: flavor,
 	}
 	return p, p.Check()
 }

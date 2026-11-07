@@ -103,7 +103,8 @@ func newFakeBuild(t *testing.T) *fakeBuild {
 	f.cdn.Put("config", buildKey, "", build)
 
 	f.pin = pin.Pin{Product: "wowf", Region: "us", Version: "1.60.1.1", BuildID: 1, BuildConfig: buildKey.String(),
-		CDNConfig: cdnKey.String(), CDNPath: "tpr/test", GameFolder: "_forever_"}
+		CDNConfig: cdnKey.String(), CDNPath: "tpr/test", GameFolder: "_forever_",
+		Flavor: "wow_camelot"}
 	if err := f.pin.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -196,6 +197,9 @@ func TestInstallVerifyRepair(t *testing.T) {
 		if !stored(t, dir, e) {
 			t.Errorf("%s not in local storage", e)
 		}
+	}
+	if fl, _ := os.ReadFile(filepath.Join(game, ".flavor.info")); string(fl) != "Product Flavor!STRING:0\nwow_camelot\n" {
+		t.Errorf(".flavor.info = %q", fl)
 	}
 	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
 	wantRow := fmt.Sprintf("us|1|%s|%s|||tpr/test|%s|http://%s/?maxhosts=4|OSX enUS speech?:OSX enUS text?|||1.60.1.1||wowf\n",
@@ -332,12 +336,14 @@ func TestVerifyWritesNothing(t *testing.T) {
 	damageStored(t, dir, f.encE)
 	bi := filepath.Join(dir, ".build.info")
 	os.Remove(bi)
+	fl := filepath.Join(dir, "_forever_", ".flavor.info")
+	os.WriteFile(fl, []byte("Product Flavor!STRING:0\nwow\n"), 0o644)
 
 	rep, err := f.run(t, dir, func(o *Options) { o.Verify = true })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Bad) != 3 || len(rep.Missing) != 1 || rep.Missing[0] != bi ||
+	if len(rep.Bad) != 4 || len(rep.Missing) != 1 || rep.Missing[0] != bi || !strings.Contains(strings.Join(rep.Bad, " "), fl) ||
 		!strings.Contains(strings.Join(rep.Bad, " "), f.encE.String()) {
 		t.Fatalf("verify: bad %v, missing %v", rep.Bad, rep.Missing)
 	}

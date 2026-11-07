@@ -290,8 +290,9 @@ func cmdPin(ctx context.Context, args []string) error {
 	product := fs.String("product", "wowf", "TACT product")
 	region := fs.String("region", "us", "version server region")
 	folder := fs.String("game-folder", pin.Default().GameFolder, "game folder name for the pin")
+	flavor := fs.String("flavor", pin.Default().Flavor, "product flavor for .flavor.info")
 	fs.Parse(args)
-	p, err := pin.Live(ctx, *product, *region, *folder)
+	p, err := pin.Live(ctx, *product, *region, *folder, *flavor)
 	if err != nil {
 		return err
 	}
