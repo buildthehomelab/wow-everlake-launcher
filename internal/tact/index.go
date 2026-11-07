@@ -63,6 +63,9 @@ func ParseIndex(name Key, data []byte) (*Index, error) {
 	}
 	sums := toc[blocks*keyBytes:]
 	entry := keyBytes + sizeBytes + offBytes
+	if count > blocks*(block/entry) {
+		return nil, fmt.Errorf("index %s: footer says %d entries, %d blocks can't hold them", name, count, blocks)
+	}
 	idx := &Index{HasOffsets: offBytes != 0, Entries: make([]IndexEntry, 0, count)}
 	for b := 0; b < blocks; b++ {
 		blk := data[b*block : (b+1)*block]

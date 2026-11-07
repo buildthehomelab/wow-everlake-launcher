@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
@@ -31,7 +32,7 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var err error
 	switch os.Args[1] {
@@ -58,7 +59,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   everlake-launcher install --dir <folder> [--tags OSX,arm64,enUS,US] [--jobs 8]
                             [--no-data] [--max-priority N] [--data-limit-mb N]
-  everlake-launcher verify  --dir <folder> [--tags ...]
+  everlake-launcher verify  --dir <folder>          (checks what install fetched; --tags etc. override)
   everlake-launcher show    [--tags ...]
   everlake-launcher pin     [--product wowf] [--region us]
 `)
@@ -109,17 +110,38 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 	if *dir == "" {
 		return fmt.Errorf("%s: --dir is required", name)
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	p := pin.Default()
 	opts := install.Options{
 		Dir: *dir, Pin: p, Tags: splitTags(*tags), Jobs: *jobs, Verify: verify, NoData: *noData,
 		DataLimit: *limitMB << 20, Log: logf,
-		CDN: cdn.New(p.Hosts(ctx, splitTags(*hosts)), p.CDNPath),
 	}
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "max-priority" {
-			opts.MaxPriority = maxPrio
+	if set["max-priority"] {
+		opts.MaxPriority = maxPrio
+	}
+	if verify {
+		// Check what the install fetched, unless told otherwise.
+		st, err := install.ReadState(*dir)
+		if err != nil {
+			return fmt.Errorf("%s: %w", *dir, install.ErrNoInstall)
 		}
-	})
+		if st.Pin.BuildConfig != p.BuildConfig {
+			logf("note: %s holds %s, this launcher pins %s; checking against %s", *dir, st.Pin.Version, p.Version,
+				p.Version)
+		}
+		if !set["tags"] {
+			opts.Tags = st.Tags
+		}
+		if !set["no-data"] {
+			opts.NoData = st.NoData
+		}
+		if !set["max-priority"] {
+			opts.MaxPriority = st.MaxPriority
+		}
+		opts.PartialData = st.DataLimit > 0
+	}
+	opts.CDN = cdn.New(p.Hosts(ctx, splitTags(*hosts)), p.CDNPath)
 	logf("%s WoW Forever %s into %s (tags %s) from %s", name, p.Version, *dir, strings.Join(opts.Tags, " "),
 		strings.Join(opts.CDN.Hosts, ", "))
 	start := time.Now()
@@ -128,7 +150,7 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 		return err
 	}
 	logf("loose files: %d (%d already there, %d fetched)", rep.LooseFiles, rep.LooseKept, rep.LooseFetched)
-	if !*noData {
+	if !opts.NoData {
 		logf("data files: %d (%d already staged, %d fetched, %d left out by --data-limit-mb)",
 			rep.DataFiles, rep.DataKept, rep.DataFetched, rep.DataSkippedByLimit)
 	}
@@ -143,7 +165,11 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 		return fmt.Errorf("%d bad, %d missing", len(rep.Bad), len(rep.Missing))
 	}
 	if verify {
-		logf("everything checked is intact")
+		if opts.PartialData {
+			logf("everything checked is intact (a trial install: data files it never fetched aren't counted)")
+		} else {
+			logf("everything checked is intact")
+		}
 	}
 	return nil
 }

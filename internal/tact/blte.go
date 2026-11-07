@@ -104,7 +104,7 @@ func DecodeBLTE(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	if headerSize == 0 {
-		return decodeChunk(data[8:])
+		return decodeChunk(data[8:], maxShortForm)
 	}
 	var out bytes.Buffer
 	at := uint64(headerSize)
@@ -117,7 +117,7 @@ func DecodeBLTE(data []byte) ([]byte, error) {
 		if md5.Sum(raw) != c.sum {
 			return nil, fmt.Errorf("BLTE chunk %d doesn't match its checksum", i)
 		}
-		dec, err := decodeChunk(raw)
+		dec, err := decodeChunk(raw, int64(c.decSize))
 		if err != nil {
 			return nil, fmt.Errorf("BLTE chunk %d: %w", i, err)
 		}
@@ -130,7 +130,11 @@ func DecodeBLTE(data []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func decodeChunk(raw []byte) ([]byte, error) {
+// maxShortForm caps what a chunk-table-less file may decode to (such files are small in practice).
+const maxShortForm = 1 << 30
+
+// decodeChunk decodes one chunk; it never produces more than limit bytes, so a hostile zlib stream can't fill memory.
+func decodeChunk(raw []byte, limit int64) ([]byte, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("empty chunk")
 	}
@@ -143,9 +147,17 @@ func decodeChunk(raw []byte) ([]byte, error) {
 			return nil, err
 		}
 		defer r.Close()
-		return io.ReadAll(r)
+		out, err := io.ReadAll(io.LimitReader(r, limit+1))
+		if err == nil && int64(len(out)) > limit {
+			return nil, fmt.Errorf("chunk decodes to more than %d bytes", limit)
+		}
+		return out, err
 	case 'F':
-		return DecodeBLTE(raw[1:])
+		out, err := DecodeBLTE(raw[1:])
+		if err == nil && int64(len(out)) > limit {
+			return nil, fmt.Errorf("chunk decodes to more than %d bytes", limit)
+		}
+		return out, err
 	case 'E':
 		return nil, ErrEncrypted
 	}

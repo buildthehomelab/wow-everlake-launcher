@@ -349,3 +349,14 @@ func (c *CDN) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write(data)
 }
+
+// Clone starts a second fake CDN with the same files (for host failover tests).
+func (c *CDN) Clone() *CDN {
+	n := NewCDN()
+	c.mu.Lock()
+	for k, v := range c.files {
+		n.files[k] = v
+	}
+	c.mu.Unlock()
+	return n
+}

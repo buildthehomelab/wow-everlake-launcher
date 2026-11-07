@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -154,7 +155,7 @@ func TestInstallVerifyRepair(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "Data", "indices", f.archive.String()+".index")); err != nil {
 		t.Error("archive index not kept in Data/indices")
 	}
-	if s, err := ReadState(dir); err != nil || s.Pin.BuildConfig != f.pin.BuildConfig || s.Limited {
+	if s, err := ReadState(dir); err != nil || s.Pin.BuildConfig != f.pin.BuildConfig || s.DataLimit != 0 || s.MaxPriority != nil {
 		t.Errorf("state: %+v %v", s, err)
 	}
 	f.requests()
@@ -248,9 +249,127 @@ func TestSafePath(t *testing.T) {
 			t.Errorf("safePath(%q) = %q, %v", name, got, err)
 		}
 	}
-	for _, name := range []string{``, `..\Wow.exe`, `/etc/passwd`, `\Windows\x.dll`, `C:\x.dll`, `a\\b`, `a\.\b`} {
+	for _, name := range []string{``, `..\Wow.exe`, `/etc/passwd`, `\Windows\x.dll`, `C:\x.dll`, `a\\b`, `a\.\b`,
+		`CON`, `Utils\aux.txt`, `lpt1.dll`, `a?b`, `a|b`, `name.`, `dir \x`, "tab\there"} {
 		if got, err := safePath(name); err == nil {
 			t.Errorf("safePath(%q) = %q, want an error", name, got)
 		}
+	}
+}
+
+func TestVerifyWritesNothing(t *testing.T) {
+	f := newFakeBuild(t)
+
+	empty := filepath.Join(t.TempDir(), "typo")
+	if _, err := f.run(t, empty, func(o *Options) { o.Verify = true }); !errors.Is(err, ErrNoInstall) {
+		t.Fatalf("verify of an empty folder: %v", err)
+	}
+	if _, err := os.Stat(empty); err == nil {
+		t.Error("verify created the folder")
+	}
+
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Damage a config and an index, and delete the staged encoding file: verify must report all three, and leave
+	// them as they are.
+	cfg := filepath.Join(dir, "Data", "config", f.pin.BuildConfig[:2], f.pin.BuildConfig[2:4], f.pin.BuildConfig)
+	b, _ := os.ReadFile(cfg)
+	os.WriteFile(cfg, append(b, '\n'), 0o644)
+	index := filepath.Join(dir, "Data", "indices", f.archive.String()+".index")
+	ib, _ := os.ReadFile(index)
+	ib[0] ^= 1
+	os.WriteFile(index, ib, 0o644)
+	var enc string
+	filepath.Walk(filepath.Join(dir, ".everlake", "staged"), func(p string, info os.FileInfo, err error) error {
+		if data, _ := os.ReadFile(p); info.Mode().IsRegular() && len(data) > 0 {
+			if d, err := tact.DecodeBLTE(data); err == nil && len(d) > 2 && string(d[:2]) == "EN" {
+				enc = p
+			}
+		}
+		return nil
+	})
+	if enc == "" {
+		t.Fatal("no staged encoding file")
+	}
+	os.Remove(enc)
+
+	rep, err := f.run(t, dir, func(o *Options) { o.Verify = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Bad) != 2 || len(rep.Missing) != 1 || rep.Missing[0] != enc {
+		t.Fatalf("verify: bad %v, missing %v", rep.Bad, rep.Missing)
+	}
+	if got, _ := os.ReadFile(cfg); bytes.Equal(got, b) {
+		t.Error("verify repaired the config")
+	}
+	if _, err := os.Stat(enc); err == nil {
+		t.Error("verify wrote the encoding file back")
+	}
+	if rep, err := f.run(t, dir, nil); err != nil || rep.Failed() {
+		t.Fatalf("repair: %+v %v", rep, err)
+	}
+	if rep, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err != nil || rep.Failed() {
+		t.Fatalf("verify after repair: %+v %v", rep, err)
+	}
+}
+
+func TestExecutableBit(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	mac := filepath.Join(dir, "_forever_", "World of Warcraft.app", "Contents", "MacOS", "World of Warcraft")
+	os.Chmod(mac, 0o644)
+	rep, err := f.run(t, dir, func(o *Options) { o.Verify = true })
+	if err != nil || len(rep.Bad) != 1 || !strings.HasSuffix(rep.Bad[0], "(not executable)") {
+		t.Fatalf("verify: %+v %v", rep, err)
+	}
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(mac); st.Mode().Perm() != 0o755 {
+		t.Errorf("mode after repair: %v", st.Mode())
+	}
+}
+
+func TestDamagedHostIsSkipped(t *testing.T) {
+	f := newFakeBuild(t)
+	good := f.cdn.Clone()
+	defer good.Close()
+	bad := append([]byte{}, f.archBytes...)
+	bad[len(bad)-10] ^= 1
+	f.cdn.Put("data", f.archive, "", bad) // the first host serves a damaged archive
+	rep, err := f.run(t, t.TempDir(), func(o *Options) {
+		o.CDN = cdn.New([]string{f.cdn.Host(), good.Host()}, f.pin.CDNPath)
+		o.CDN.Tries = 1
+	})
+	if err != nil || rep.Failed() {
+		t.Fatalf("install with one damaged host: %+v %v", rep, err)
+	}
+}
+
+func TestVerifyPartialInstall(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	rep, err := f.run(t, dir, func(o *Options) { o.DataLimit = 1 })
+	if err != nil || rep.DataSkippedByLimit != 1 {
+		t.Fatalf("trial install: %+v %v", rep, err)
+	}
+	s, err := ReadState(dir)
+	if err != nil || s.DataLimit != 1 {
+		t.Fatalf("state: %+v %v", s, err)
+	}
+	// Verify the way the CLI does for a trial install: missing data isn't counted, damaged data is.
+	rep, err = f.run(t, dir, func(o *Options) { o.Verify = true; o.PartialData = true })
+	if err != nil || rep.Failed() {
+		t.Fatalf("verify trial install: %+v %v", rep, err)
+	}
+	rep, err = f.run(t, dir, func(o *Options) { o.Verify = true })
+	if err != nil || len(rep.Missing) != 1 {
+		t.Fatalf("full verify of a trial install should miss 1 file: %+v %v", rep, err)
 	}
 }

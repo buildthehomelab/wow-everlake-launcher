@@ -124,6 +124,9 @@ func ParseInstall(data []byte) (*Install, error) {
 	}
 	tagCount := int(binary.BigEndian.Uint16(data[4:]))
 	count := int(binary.BigEndian.Uint32(data[6:]))
+	if count > len(data)/(1+hashSize+4) {
+		return nil, fmt.Errorf("install manifest: %d entries can't fit in %d bytes", count, len(data))
+	}
 	tags, at, err := readTags(data, 10, tagCount, count)
 	if err != nil {
 		return nil, fmt.Errorf("install manifest: %w", err)
@@ -207,7 +210,7 @@ func ParseDownload(data []byte) (*Download, error) {
 	if hasChecksum {
 		entry += 4
 	}
-	if at+count*entry > len(data) {
+	if count > len(data)/entry || at+count*entry > len(data) {
 		return nil, fmt.Errorf("download manifest: %d entries don't fit", count)
 	}
 	m.Entries = make([]DownloadEntry, count)

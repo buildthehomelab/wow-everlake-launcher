@@ -36,10 +36,16 @@ type Options struct {
 	Dir  string
 	Pin  pin.Pin
 	CDN  *cdn.Client
-	Tags []string // e.g. OSX, arm64, enUS: picks the install and download manifest entries
+	Tags []string // e.g. OSX, arm64, enUS, US: picks the install and download manifest entries
 	Jobs int      // parallel requests
 
-	Verify      bool  // check what's on disk; fetch nothing except what checking needs (configs, indexes, manifests)
+	// Verify checks what's on disk and writes nothing. It reports every damaged or missing file. Configs, indexes and
+	// manifests it needs in order to go on are read from the CDN when the copy on disk is bad (and reported too).
+	Verify bool
+	// PartialData (Verify only): the install was cut short by a data limit, so missing data files aren't reported;
+	// damaged ones still are.
+	PartialData bool
+
 	NoData      bool  // stop after the loose files (skip the download manifest)
 	MaxPriority *int  // only download manifest entries at or below this priority
 	DataLimit   int64 // stop the data stage after about this many bytes (0: no limit); for trial runs
@@ -60,10 +66,14 @@ type Report struct {
 // Failed reports whether anything is bad or missing.
 func (r *Report) Failed() bool { return len(r.Bad)+len(r.Missing) > 0 }
 
+// ErrNoInstall is returned by Verify for a folder no install finished in.
+var ErrNoInstall = errors.New("no finished Everlake install in this folder (.everlake/install.json is missing)")
+
 type run struct {
 	Options
 	rep        Report
 	mu         sync.Mutex
+	reported   map[string]bool
 	downloaded atomic.Int64
 	build, cdc tact.Config
 	enc        *tact.Encoding
@@ -77,10 +87,14 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	if opts.Log == nil {
 		opts.Log = func(string, ...any) {}
 	}
-	r := &run{Options: opts}
+	r := &run{Options: opts, reported: map[string]bool{}}
 	r.rep.Version, r.rep.BuildConfig, r.rep.CDNConfig = opts.Pin.Version, opts.Pin.BuildConfig, opts.Pin.CDNConfig
 	r.rep.Where = opts.Dir
-	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
+	if opts.Verify {
+		if _, err := ReadState(opts.Dir); err != nil {
+			return nil, fmt.Errorf("%s: %w", opts.Dir, ErrNoInstall)
+		}
+	} else if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
 	stop := r.progress()
@@ -109,9 +123,12 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	if encE.IsZero() {
+		return nil, errors.New("the build config names no encoded key for the encoding file")
+	}
 	sys := map[tact.Key]*where{encE: nil}
 	locate(idx, sys)
-	encRaw, err := r.blob(ctx, encE, sys[encE])
+	encRaw, err := r.blob(ctx, encE, encC, sys[encE])
 	if err != nil {
 		return nil, fmt.Errorf("encoding file: %w", err)
 	}
@@ -148,7 +165,7 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	locate(idx, sys)
 	manifest := func(name string) ([]byte, error) {
 		k := system[name]
-		raw, err := r.blob(ctx, k[1], sys[k[1]])
+		raw, err := r.blob(ctx, k[1], k[0], sys[k[1]])
 		if err != nil {
 			return nil, fmt.Errorf("%s manifest: %w", name, err)
 		}
@@ -200,18 +217,24 @@ func (r *run) configPath(k tact.Key) string {
 // config reads a config from disk if it's there and intact, else from the CDN. Its name is its MD5.
 func (r *run) config(ctx context.Context, k tact.Key) (tact.Config, error) {
 	p := r.configPath(k)
-	if data, err := os.ReadFile(p); err == nil && tact.KeyOf(data) == k {
+	data, err := os.ReadFile(p)
+	if err == nil && tact.KeyOf(data) == k {
 		return tact.ParseConfig(string(data)), nil
 	}
-	data, err := r.CDN.Get(ctx, "config", k, "")
+	if r.Verify {
+		r.problem(p, err == nil)
+	}
+	data, err = r.CDN.Do(ctx, cdn.Request{Kind: "config", Key: k, Max: 16 << 20, Check: func(b []byte) error {
+		if tact.KeyOf(b) != k {
+			return fmt.Errorf("config %s doesn't match its name", k)
+		}
+		return nil
+	}})
 	if err != nil {
 		return nil, err
 	}
 	r.downloaded.Add(int64(len(data)))
-	if tact.KeyOf(data) != k {
-		return nil, fmt.Errorf("config %s doesn't match its name", k)
-	}
-	return tact.ParseConfig(string(data)), writeFile(p, data, 0o644)
+	return tact.ParseConfig(string(data)), r.save(p, data, 0o644)
 }
 
 type namedIndex struct {
@@ -234,26 +257,28 @@ func (r *run) indexes(ctx context.Context) ([]namedIndex, error) {
 		keys = append(keys, k)
 	}
 	out := make([]namedIndex, len(keys))
-	err = r.parallel(ctx, len(keys), func(i int) error {
+	err = r.parallel(ctx, len(keys), func(ctx context.Context, i int) error {
 		k := keys[i]
 		p := filepath.Join(r.Dir, "Data", "indices", k.String()+".index")
-		if data, err := os.ReadFile(p); err == nil {
+		data, err := os.ReadFile(p)
+		if err == nil {
 			if idx, err := tact.ParseIndex(k, data); err == nil {
 				out[i] = namedIndex{k, idx}
 				return nil
 			}
 		}
-		data, err := r.CDN.Get(ctx, "data", k, ".index")
+		if r.Verify {
+			r.problem(p, err == nil)
+		}
+		var idx *tact.Index
+		data, err = r.CDN.Do(ctx, cdn.Request{Kind: "data", Key: k, Suffix: ".index", Max: 64 << 20,
+			Check: func(b []byte) (err error) { idx, err = tact.ParseIndex(k, b); return err }})
 		if err != nil {
 			return err
 		}
 		r.downloaded.Add(int64(len(data)))
-		idx, err := tact.ParseIndex(k, data)
-		if err != nil {
-			return err
-		}
 		out[i] = namedIndex{k, idx}
-		return writeFile(p, data, 0o644)
+		return r.save(p, data, 0o644)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("archive indexes: %w", err)
@@ -273,12 +298,12 @@ type where struct {
 	size    uint32
 }
 
-// locate fills in the place of every wanted encoded key found in the indexes. Keys found nowhere stay nil and are
-// tried as loose files on the CDN.
+// locate fills in the place of every wanted encoded key found in the indexes. Keys found nowhere (or listed with
+// size 0, which no real file has) stay nil and are tried as loose files on the CDN.
 func locate(idx []namedIndex, want map[tact.Key]*where) {
 	for _, x := range idx {
 		for _, e := range x.idx.Entries {
-			if w, ok := want[e.EKey]; ok && w == nil {
+			if w, ok := want[e.EKey]; ok && w == nil && e.Size > 0 {
 				if x.idx.HasOffsets {
 					want[e.EKey] = &where{archive: x.archive, offset: e.Offset, size: e.Size}
 				} else {
@@ -296,29 +321,46 @@ func (r *run) stagedPath(e tact.Key) string {
 	return filepath.Join(r.Dir, ".everlake", "staged", s[:2], s)
 }
 
-// blob returns a stored file, checked against its encoded key: the staged copy if it's intact, else from the CDN
-// (and staged). In Verify mode a missing or damaged staged copy is fetched only when it's a build file the check
-// needs to go on; content files are reported instead (see dataFiles).
-func (r *run) blob(ctx context.Context, e tact.Key, w *where) ([]byte, error) {
+// fetchStored gets one stored file from the CDN. check runs on each host's answer after the encoded-key check, so
+// a host with a damaged copy is skipped for the next one.
+func (r *run) fetchStored(ctx context.Context, e tact.Key, w *where, check func([]byte) error) ([]byte, error) {
+	q := cdn.Request{Kind: "data", Key: e, Check: func(b []byte) error {
+		if err := tact.VerifyBLTE(b, e); err != nil {
+			return err
+		}
+		if check != nil {
+			return check(b)
+		}
+		return nil
+	}}
+	if w != nil && !w.archive.IsZero() {
+		q.Key, q.Offset, q.Size = w.archive, int64(w.offset), int64(w.size)
+	} else if w != nil {
+		q.Max = int64(w.size)
+	}
+	data, err := r.CDN.Do(ctx, q)
+	if err == nil {
+		r.downloaded.Add(int64(len(data)))
+	}
+	return data, err
+}
+
+// blob returns one of the build's own files (encoding file, manifests), checked against both keys: the staged copy
+// if it's intact, else from the CDN (staged again unless verifying, and reported when verifying).
+func (r *run) blob(ctx context.Context, e, c tact.Key, w *where) ([]byte, error) {
 	p := r.stagedPath(e)
-	if data, err := os.ReadFile(p); err == nil && tact.VerifyBLTE(data, e) == nil {
+	data, err := os.ReadFile(p)
+	if err == nil && tact.VerifyBLTE(data, e) == nil {
 		return data, nil
 	}
-	var data []byte
-	var err error
-	if w != nil && !w.archive.IsZero() {
-		data, err = r.CDN.GetRange(ctx, "data", w.archive, int64(w.offset), int64(w.size))
-	} else {
-		data, err = r.CDN.Get(ctx, "data", e, "")
+	if r.Verify {
+		r.problem(p, err == nil)
 	}
+	data, err = r.fetchStored(ctx, e, w, func(b []byte) error { _, err := tact.Decode(b, e, c); return err })
 	if err != nil {
 		return nil, err
 	}
-	r.downloaded.Add(int64(len(data)))
-	if err := tact.VerifyBLTE(data, e); err != nil {
-		return nil, err
-	}
-	return data, writeFile(p, data, 0o644)
+	return data, r.save(p, data, 0o644)
 }
 
 // --- loose files -------------------------------------------------------------------------------------------------
@@ -361,45 +403,43 @@ func (r *run) looseFiles(ctx context.Context, idx []namedIndex, inst *tact.Insta
 	locate(idx, want)
 	r.rep.LooseFiles = len(jobs)
 	r.Log("install manifest: %d of %d loose files match %s", len(jobs), len(inst.Entries), strings.Join(r.Tags, " "))
-	return r.parallel(ctx, len(jobs), func(i int) error {
+	return r.parallel(ctx, len(jobs), func(ctx context.Context, i int) error {
 		j := jobs[i]
-		if sameContent(j.path, j.e.CKey) {
+		data, err := os.ReadFile(j.path)
+		if err == nil && tact.KeyOf(data) == j.e.CKey {
+			// Right bytes; programs must also still be executable.
+			if mode := modeFor(data); mode&0o111 != 0 {
+				if st, err := os.Stat(j.path); err == nil && st.Mode().Perm()&0o111 == 0 {
+					if r.Verify {
+						r.problem(j.path+" (not executable)", true)
+						return nil
+					}
+					if err := os.Chmod(j.path, mode); err != nil {
+						return err
+					}
+				}
+			}
 			r.count(&r.rep.LooseKept)
 			return nil
 		}
 		if r.Verify {
-			r.problem(j.path, fileExists(j.path))
+			r.problem(j.path, err == nil)
 			return nil
 		}
-		raw, err := r.fetchStored(ctx, j.ekey, want[j.ekey])
+		var content []byte
+		_, err = r.fetchStored(ctx, j.ekey, want[j.ekey], func(b []byte) (err error) {
+			content, err = tact.Decode(b, j.ekey, j.e.CKey)
+			return err
+		})
 		if err != nil {
 			return fmt.Errorf("%s: %w", j.e.Name, err)
 		}
-		data, err := tact.Decode(raw, j.ekey, j.e.CKey)
-		if err != nil {
-			return fmt.Errorf("%s: %w", j.e.Name, err)
-		}
-		if err := writeFile(j.path, data, modeFor(data)); err != nil {
+		if err := writeFile(j.path, content, modeFor(content)); err != nil {
 			return err
 		}
 		r.count(&r.rep.LooseFetched)
 		return nil
 	})
-}
-
-// fetchStored gets one stored file from the CDN without staging it.
-func (r *run) fetchStored(ctx context.Context, e tact.Key, w *where) ([]byte, error) {
-	var data []byte
-	var err error
-	if w != nil && !w.archive.IsZero() {
-		data, err = r.CDN.GetRange(ctx, "data", w.archive, int64(w.offset), int64(w.size))
-	} else {
-		data, err = r.CDN.Get(ctx, "data", e, "")
-	}
-	if err == nil {
-		r.downloaded.Add(int64(len(data)))
-	}
-	return data, err
 }
 
 // --- data files --------------------------------------------------------------------------------------------------
@@ -424,14 +464,17 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	}
 	var order []tact.Key
 	want := map[tact.Key]*where{}
+	manifestSize := map[tact.Key]int64{}
 	add := func(e tact.Key) {
 		if _, ok := want[e]; !ok {
 			want[e] = nil
 			order = append(order, e)
 		}
 	}
+	isSystem := map[tact.Key]bool{}
 	for _, k := range system {
 		add(k[1])
+		isSystem[k[1]] = true
 	}
 	nsys := len(order)
 	for _, e := range entries {
@@ -439,6 +482,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 			continue
 		}
 		add(e.EKey)
+		manifestSize[e.EKey] = int64(e.Size)
 	}
 	locate(idx, want)
 	r.rep.DataFiles = len(order)
@@ -447,12 +491,19 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 
 	// Keep what's already staged and intact.
 	var need []tact.Key
-	var budget = r.DataLimit
 	var mu sync.Mutex
-	err = r.parallel(ctx, len(order), func(i int) error {
+	err = r.parallel(ctx, len(order), func(ctx context.Context, i int) error {
 		e := order[i]
-		if data, err := os.ReadFile(r.stagedPath(e)); err == nil && tact.VerifyBLTE(data, e) == nil {
+		p := r.stagedPath(e)
+		data, err := os.ReadFile(p)
+		if err == nil && tact.VerifyBLTE(data, e) == nil {
 			r.count(&r.rep.DataKept)
+			return nil
+		}
+		if r.Verify {
+			if err == nil || !r.PartialData || isSystem[e] {
+				r.problem(p, err == nil)
+			}
 			return nil
 		}
 		mu.Lock()
@@ -460,15 +511,8 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		mu.Unlock()
 		return nil
 	})
-	if err != nil {
+	if err != nil || r.Verify {
 		return err
-	}
-	if r.Verify {
-		for _, e := range need {
-			p := r.stagedPath(e)
-			r.problem(p, fileExists(p))
-		}
-		return nil
 	}
 	// Manifest order is priority order: keep it when a limit cuts the list short.
 	pos := make(map[tact.Key]int, len(order))
@@ -476,22 +520,21 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		pos[e] = i
 	}
 	sort.Slice(need, func(a, b int) bool { return pos[need[a]] < pos[need[b]] })
-	if budget > 0 {
-		// The build's own files sort first (they were added to order first) and never count against the limit.
-		isSystem := map[tact.Key]bool{}
-		for _, k := range system {
-			isSystem[k[1]] = true
-		}
+	gap := int64(spanGap)
+	if r.DataLimit > 0 {
+		// The build's own files sort first and never count against the limit. With a limit, ranges don't read
+		// through gaps, so the bytes downloaded stay close to the budget.
+		gap = 0
 		var used int64
 		for i, e := range need {
 			if isSystem[e] {
 				continue
 			}
-			size := int64(0)
+			size := manifestSize[e]
 			if w := want[e]; w != nil {
 				size = int64(w.size)
 			}
-			if used+size > budget && used > 0 {
+			if used+size > r.DataLimit && used > 0 {
 				r.rep.DataSkippedByLimit = len(need) - i
 				need = need[:i]
 				break
@@ -517,7 +560,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		for _, e := range files {
 			w := want[e]
 			start, end := int64(w.offset), int64(w.offset)+int64(w.size)
-			if cur != nil && start-cur.end <= spanGap && end-cur.start <= spanMax {
+			if cur != nil && start-cur.end <= gap && end-cur.start <= spanMax {
 				if end > cur.end {
 					cur.end = end
 				}
@@ -533,32 +576,43 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	}
 	r.Log("data: %d to fetch in %d requests, %d already staged", len(need), len(spans), r.rep.DataKept)
 
-	return r.parallel(ctx, len(spans), func(i int) error {
+	return r.parallel(ctx, len(spans), func(ctx context.Context, i int) error {
 		s := spans[i]
 		if s.archive.IsZero() {
 			e := s.files[0]
-			if _, err := r.blob(ctx, e, want[e]); err != nil {
-				if errors.Is(err, cdn.ErrNotFound) {
-					r.problem(e.String(), false)
-					return nil
-				}
+			data, err := r.fetchStored(ctx, e, want[e], nil)
+			if errors.Is(err, cdn.ErrNotFound) {
+				r.problem(e.String()+" (not on the CDN)", false)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if err := writeFile(r.stagedPath(e), data, 0o644); err != nil {
 				return err
 			}
 			r.count(&r.rep.DataFetched)
 			return nil
 		}
-		data, err := r.CDN.GetRange(ctx, "data", s.archive, s.start, s.end-s.start)
+		part := func(data []byte, e tact.Key) []byte {
+			off := int64(want[e].offset) - s.start
+			return data[off : off+int64(want[e].size)]
+		}
+		data, err := r.CDN.Do(ctx, cdn.Request{Kind: "data", Key: s.archive, Offset: s.start, Size: s.end - s.start,
+			Check: func(data []byte) error {
+				for _, e := range s.files {
+					if err := tact.VerifyBLTE(part(data, e), e); err != nil {
+						return fmt.Errorf("archive %s at %d: %w", s.archive, want[e].offset, err)
+					}
+				}
+				return nil
+			}})
 		if err != nil {
 			return err
 		}
 		r.downloaded.Add(int64(len(data)))
 		for _, e := range s.files {
-			w := want[e]
-			part := data[int64(w.offset)-s.start : int64(w.offset)-s.start+int64(w.size)]
-			if err := tact.VerifyBLTE(part, e); err != nil {
-				return fmt.Errorf("archive %s at %d: %w", s.archive, w.offset, err)
-			}
-			if err := writeFile(r.stagedPath(e), part, 0o644); err != nil {
+			if err := writeFile(r.stagedPath(e), part(data, e), 0o644); err != nil {
 				return err
 			}
 			r.count(&r.rep.DataFetched)
@@ -569,34 +623,42 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 
 // --- helpers -----------------------------------------------------------------------------------------------------
 
-// safePath turns a manifest name into a relative path inside the game folder, refusing anything that could escape.
+// windowsReserved are names Windows won't create, with or without an extension.
+var windowsReserved = map[string]bool{"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true, "com6": true, "com7": true, "com8": true,
+	"com9": true, "lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true, "lpt6": true, "lpt7": true,
+	"lpt8": true, "lpt9": true}
+
+// safePath turns a manifest name into a relative path inside the game folder. It refuses anything that could
+// escape the folder, and anything Windows can't store (so a name works the same on both platforms).
 func safePath(name string) (string, error) {
+	bad := func() (string, error) { return "", fmt.Errorf("unsafe file name %q", name) }
 	n := strings.ReplaceAll(name, `\`, "/")
-	if n == "" || strings.HasPrefix(n, "/") || strings.Contains(n, ":") {
-		return "", fmt.Errorf("unsafe file name %q", name)
+	if n == "" || strings.HasPrefix(n, "/") {
+		return bad()
+	}
+	for _, c := range n {
+		if c < 0x20 || strings.ContainsRune(`:<>"|?*`, c) {
+			return bad()
+		}
 	}
 	for _, part := range strings.Split(n, "/") {
-		if part == "" || part == "." || part == ".." {
-			return "", fmt.Errorf("unsafe file name %q", name)
+		if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") {
+			return bad()
+		}
+		base, _, _ := strings.Cut(strings.ToLower(part), ".")
+		if windowsReserved[strings.TrimRight(base, " ")] {
+			return bad()
 		}
 	}
 	return filepath.FromSlash(path.Clean(n)), nil
 }
 
-func sameContent(p string, ckey tact.Key) bool {
-	data, err := os.ReadFile(p)
-	return err == nil && tact.KeyOf(data) == ckey
-}
-
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
-}
-
-// modeFor marks programs executable: Mach-O binaries (thin or universal) and scripts.
+// modeFor marks programs executable: Mach-O binaries (thin or universal, 32 or 64 bit) and scripts.
 func modeFor(data []byte) os.FileMode {
 	if len(data) >= 4 {
-		for _, magic := range [][]byte{{0xcf, 0xfa, 0xed, 0xfe}, {0xce, 0xfa, 0xed, 0xfe}, {0xca, 0xfe, 0xba, 0xbe}} {
+		for _, magic := range [][]byte{{0xcf, 0xfa, 0xed, 0xfe}, {0xce, 0xfa, 0xed, 0xfe}, {0xca, 0xfe, 0xba, 0xbe},
+			{0xca, 0xfe, 0xba, 0xbf}} {
 			if bytes.Equal(data[:4], magic) {
 				return 0o755
 			}
@@ -606,6 +668,14 @@ func modeFor(data []byte) os.FileMode {
 		}
 	}
 	return 0o644
+}
+
+// save writes a file unless this is a Verify run, which never writes.
+func (r *run) save(p string, data []byte, mode os.FileMode) error {
+	if r.Verify {
+		return nil
+	}
+	return writeFile(p, data, mode)
 }
 
 // writeFile writes through a temporary file and a rename, so a cut-off run never leaves a half file under the
@@ -640,18 +710,24 @@ func (r *run) count(n *int) {
 	r.mu.Unlock()
 }
 
+// problem records a damaged (exists) or missing file, once per path.
 func (r *run) problem(what string, exists bool) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reported[what] {
+		return
+	}
+	r.reported[what] = true
 	if exists {
 		r.rep.Bad = append(r.rep.Bad, what)
 	} else {
 		r.rep.Missing = append(r.rep.Missing, what)
 	}
-	r.mu.Unlock()
 }
 
-// parallel runs fn(0..n-1) on Jobs workers and returns the first error (the rest are cancelled).
-func (r *run) parallel(ctx context.Context, n int, fn func(int) error) error {
+// parallel runs fn(0..n-1) on Jobs workers and returns the first error. The context fn gets is cancelled on the
+// first error, so requests already in flight stop too.
+func (r *run) parallel(ctx context.Context, n int, fn func(context.Context, int) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var next atomic.Int64
@@ -667,7 +743,7 @@ func (r *run) parallel(ctx context.Context, n int, fn func(int) error) error {
 				if i >= n {
 					return
 				}
-				if err := fn(i); err != nil {
+				if err := fn(ctx, i); err != nil {
 					once.Do(func() { first = err; cancel() })
 					return
 				}
@@ -706,18 +782,22 @@ func (r *run) progress() func() {
 	return func() { close(done) }
 }
 
-// State is what .everlake/install.json records after a complete install.
+// State is what .everlake/install.json records after a complete install, so verify can check the same selection.
 type State struct {
-	Pin       pin.Pin   `json:"pin"`
-	Tags      []string  `json:"tags"`
-	NoData    bool      `json:"loose_files_only,omitempty"`
-	Limited   bool      `json:"data_limited,omitempty"`
-	Installed time.Time `json:"installed"`
+	Pin         pin.Pin   `json:"pin"`
+	Tags        []string  `json:"tags"`
+	NoData      bool      `json:"loose_files_only,omitempty"`
+	MaxPriority *int      `json:"max_priority,omitempty"`
+	DataLimit   int64     `json:"data_limit_bytes,omitempty"` // a trial run: not every data file was fetched
+	Installed   time.Time `json:"installed"`
 }
 
 func (r *run) writeState() error {
-	limited := r.MaxPriority != nil || r.rep.DataSkippedByLimit > 0
-	data, err := json.MarshalIndent(State{r.Pin, r.Tags, r.NoData, limited, time.Now().UTC()}, "", "  ")
+	s := State{Pin: r.Pin, Tags: r.Tags, NoData: r.NoData, MaxPriority: r.MaxPriority, Installed: time.Now().UTC()}
+	if r.rep.DataSkippedByLimit > 0 {
+		s.DataLimit = r.DataLimit
+	}
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}

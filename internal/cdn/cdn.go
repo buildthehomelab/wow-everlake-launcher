@@ -44,24 +44,47 @@ func (c *Client) URL(host, kind string, key tact.Key, suffix string) string {
 	return fmt.Sprintf("http://%s/%s/%s/%s/%s/%s%s", host, c.Path, kind, s[:2], s[2:4], s, suffix)
 }
 
+// Request is one fetch. With Size > 0 it reads Size bytes at Offset (a file inside an archive); otherwise the whole
+// file, at most Max bytes. Check, when set, judges the bytes from each host: bytes that fail it count as that host's
+// error and the next host is tried, so one host or proxy serving a damaged copy doesn't stop an install.
+type Request struct {
+	Kind   string // "config" or "data"
+	Key    tact.Key
+	Suffix string // ".index" for archive indexes
+	Offset int64
+	Size   int64
+	Max    int64 // whole-file cap; 0 means DefaultMax
+	Check  func([]byte) error
+}
+
+// DefaultMax caps a whole-file download (the largest WoW files are a few hundred MB).
+const DefaultMax = 2 << 30
+
 // Get fetches a whole file.
 func (c *Client) Get(ctx context.Context, kind string, key tact.Key, suffix string) ([]byte, error) {
-	return c.fetch(ctx, kind, key, suffix, -1, 0)
+	return c.Do(ctx, Request{Kind: kind, Key: key, Suffix: suffix})
 }
 
 // GetRange fetches size bytes at offset of a file (used to read one file out of an archive).
 func (c *Client) GetRange(ctx context.Context, kind string, key tact.Key, offset int64, size int64) ([]byte, error) {
-	return c.fetch(ctx, kind, key, "", offset, size)
+	return c.Do(ctx, Request{Kind: kind, Key: key, Offset: offset, Size: size})
 }
 
-func (c *Client) fetch(ctx context.Context, kind string, key tact.Key, suffix string, offset, size int64) ([]byte, error) {
+// Do runs a request against each host in turn, with retries, until one answers with bytes that pass the check.
+func (c *Client) Do(ctx context.Context, q Request) ([]byte, error) {
 	if len(c.Hosts) == 0 {
 		return nil, errors.New("no CDN hosts")
+	}
+	if q.Size < 0 || q.Offset < 0 || (q.Size == 0 && q.Offset != 0) {
+		return nil, fmt.Errorf("bad range %d+%d", q.Offset, q.Size)
+	}
+	if q.Max <= 0 {
+		q.Max = DefaultMax
 	}
 	var last error
 	notFound := 0
 	for _, host := range c.Hosts {
-		url := c.URL(host, kind, key, suffix)
+		url := c.URL(host, q.Kind, q.Key, q.Suffix)
 		for try := 0; try < c.Tries; try++ {
 			if try > 0 {
 				select {
@@ -70,7 +93,12 @@ func (c *Client) fetch(ctx context.Context, kind string, key tact.Key, suffix st
 				case <-time.After(time.Duration(try*try) * time.Second):
 				}
 			}
-			data, status, err := c.once(ctx, url, offset, size)
+			data, status, err := c.once(ctx, url, q)
+			if err == nil && q.Check != nil {
+				if err = q.Check(data); err != nil {
+					err = fmt.Errorf("%s: %w", url, err)
+				}
+			}
 			if err == nil {
 				return data, nil
 			}
@@ -85,19 +113,20 @@ func (c *Client) fetch(ctx context.Context, kind string, key tact.Key, suffix st
 		}
 	}
 	if notFound == len(c.Hosts) {
-		return nil, fmt.Errorf("%s/%s %s: %w", c.Path, kind, key, ErrNotFound)
+		return nil, fmt.Errorf("%s/%s %s%s: %w", c.Path, q.Kind, q.Key, q.Suffix, ErrNotFound)
 	}
 	return nil, last
 }
 
-func (c *Client) once(ctx context.Context, url string, offset, size int64) ([]byte, int, error) {
+func (c *Client) once(ctx context.Context, url string, q Request) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("User-Agent", UserAgent)
-	if offset >= 0 {
-		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-"+strconv.FormatInt(offset+size-1, 10))
+	ranged := q.Size > 0
+	if ranged {
+		req.Header.Set("Range", "bytes="+strconv.FormatInt(q.Offset, 10)+"-"+strconv.FormatInt(q.Offset+q.Size-1, 10))
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -105,26 +134,29 @@ func (c *Client) once(ctx context.Context, url string, offset, size int64) ([]by
 	}
 	defer resp.Body.Close()
 	switch {
-	case offset >= 0 && resp.StatusCode == http.StatusPartialContent:
-	case offset >= 0 && resp.StatusCode == http.StatusOK:
+	case ranged && resp.StatusCode == http.StatusPartialContent:
+	case ranged && resp.StatusCode == http.StatusOK:
 		// The host ignored the range: skip to it. Rare, but a plain mirror might do this.
-		if _, err := io.CopyN(io.Discard, resp.Body, offset); err != nil {
+		if _, err := io.CopyN(io.Discard, resp.Body, q.Offset); err != nil {
 			return nil, resp.StatusCode, fmt.Errorf("%s: %w", url, err)
 		}
-	case offset < 0 && resp.StatusCode == http.StatusOK:
+	case !ranged && resp.StatusCode == http.StatusOK:
 	default:
 		return nil, resp.StatusCode, fmt.Errorf("%s: HTTP %s", url, resp.Status)
 	}
-	var body io.Reader = resp.Body
-	if offset >= 0 {
-		body = io.LimitReader(resp.Body, size)
+	limit := q.Max + 1
+	if ranged {
+		limit = q.Size
 	}
-	data, err := io.ReadAll(body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("%s: %w", url, err)
 	}
-	if offset >= 0 && int64(len(data)) != size {
-		return nil, resp.StatusCode, fmt.Errorf("%s: asked for %d bytes, got %d", url, size, len(data))
+	if ranged && int64(len(data)) != q.Size {
+		return nil, resp.StatusCode, fmt.Errorf("%s: asked for %d bytes, got %d", url, q.Size, len(data))
+	}
+	if !ranged && int64(len(data)) > q.Max {
+		return nil, resp.StatusCode, fmt.Errorf("%s: larger than %d bytes", url, q.Max)
 	}
 	return data, resp.StatusCode, nil
 }
@@ -141,6 +173,7 @@ func Table(ctx context.Context, server, product, table, region string) (map[stri
 	}
 	req.Header.Set("User-Agent", UserAgent)
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	// (the version server answers a few KB)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +181,7 @@ func Table(ctx context.Context, server, product, table, region string) (map[stri
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: HTTP %s", url, resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}
