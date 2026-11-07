@@ -8,5 +8,6 @@
   "cdn_path": "tpr/wow",
   "cdn_hosts": ["level3.blizzard.com", "us.cdn.blizzard.com"],
   "game_folder": "_forever_",
+  "flavor": "wow_camelot",
   "note": "The build the Everlake server core is pinned to (wow-project-everlake TC_COMMIT 6ac7bece). Change it only together with the core."
 }

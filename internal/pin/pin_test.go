@@ -7,7 +7,7 @@ import (
 
 func TestDefaultPin(t *testing.T) {
 	p := Default()
-	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.BuildID != 70790 {
+	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wow_camelot" || p.BuildID != 70790 {
 		t.Errorf("default pin = %+v", p)
 	}
 }
@@ -19,6 +19,7 @@ func TestPinCheck(t *testing.T) {
 		"bad CDN key":       func(p *Pin) { p.CDNConfig = strings.Repeat("z", 32) },
 		"folder with slash": func(p *Pin) { p.GameFolder = "../x" },
 		"folder dot-dot":    func(p *Pin) { p.GameFolder = ".." },
+		"no flavor":         func(p *Pin) { p.Flavor = "" },
 		"version mismatch":  func(p *Pin) { p.BuildID = 70862 },
 		"no product":        func(p *Pin) { p.Product = "" },
 	} {

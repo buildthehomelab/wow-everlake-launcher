@@ -28,6 +28,10 @@ func buildInfo(p pin.Pin, hosts []string, tags string) []byte {
 	return []byte(buildInfoHeader + "\n" + strings.Join(row, "|") + "\n")
 }
 
+// flavorInfo is <game folder>/.flavor.info, which Battle.net writes next to the game: the game picks its tables
+// (and its schema, e.g. WOWSTATIC_1_60_1_70399 for Forever) by this flavor.
+func flavorInfo(p pin.Pin) []byte { return []byte("Product Flavor!STRING:0\n" + p.Flavor + "\n") }
+
 // buildInfoTags writes the install's tags the way .build.info lists them: platform, architecture and region
 // (marked with ?), then the locale once for speech and once for text, e.g.
 // "Windows x86_64 US? enUS speech?:Windows x86_64 US? enUS text?". known says which type each tag name is.
