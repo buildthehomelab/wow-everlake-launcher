@@ -1,0 +1,12 @@
+{
+  "product": "wowf",
+  "region": "us",
+  "version": "1.60.1.70790",
+  "build_id": 70790,
+  "build_config": "9006ba6948388dd0d4a0578e64b8a92e",
+  "cdn_config": "0e139f0e95542dbe2a5462d8a6b2ebae",
+  "cdn_path": "tpr/wow",
+  "cdn_hosts": ["level3.blizzard.com", "us.cdn.blizzard.com"],
+  "game_folder": "_forever_",
+  "note": "The build the Everlake server core is pinned to (wow-project-everlake TC_COMMIT 6ac7bece). Change it only together with the core."
+}
