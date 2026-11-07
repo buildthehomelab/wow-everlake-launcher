@@ -140,11 +140,13 @@ func TestInstallVerifyRepair(t *testing.T) {
 	if got, _ := os.ReadFile(mac); !bytes.Equal(got, f.macBinary) {
 		t.Error("Mac binary has the wrong bytes")
 	}
-	if st, err := os.Stat(mac); err != nil || st.Mode().Perm() != 0o755 {
-		t.Errorf("Mac binary mode: %v %v", st.Mode(), err)
-	}
-	if st, err := os.Stat(filepath.Join(game, "Utils", "readme.txt")); err != nil || st.Mode().Perm() != 0o644 {
-		t.Errorf("readme: %v", err)
+	if runtime.GOOS != "windows" { // Windows has no file modes beyond read-only
+		if st, err := os.Stat(mac); err != nil || st.Mode().Perm() != 0o755 {
+			t.Errorf("Mac binary mode: %v %v", st.Mode(), err)
+		}
+		if st, err := os.Stat(filepath.Join(game, "Utils", "readme.txt")); err != nil || st.Mode().Perm() != 0o644 {
+			t.Errorf("readme: %v", err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(game, "Wow.exe")); err == nil {
 		t.Error("the Windows exe was installed for OSX")
