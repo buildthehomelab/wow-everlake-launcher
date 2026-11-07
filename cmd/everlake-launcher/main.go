@@ -151,7 +151,7 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 	}
 	logf("loose files: %d (%d already there, %d fetched)", rep.LooseFiles, rep.LooseKept, rep.LooseFetched)
 	if !opts.NoData {
-		logf("data files: %d (%d already staged, %d fetched, %d left out by --data-limit-mb)",
+		logf("data files: %d (%d already stored, %d fetched, %d left out by --data-limit-mb)",
 			rep.DataFiles, rep.DataKept, rep.DataFetched, rep.DataSkippedByLimit)
 	}
 	logf("downloaded %.1f MB in %s", float64(rep.BytesDownloaded)/(1<<20), time.Since(start).Round(time.Second))

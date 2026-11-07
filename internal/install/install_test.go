@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/casc"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
@@ -27,6 +28,7 @@ type fakeBuild struct {
 	data      map[string]tact.Key // name -> encoded key of the download manifest's files
 	archive   tact.Key
 	archBytes []byte
+	encE      tact.Key // the encoding file's encoded key
 }
 
 func newFakeBuild(t *testing.T) *fakeBuild {
@@ -82,6 +84,7 @@ func newFakeBuild(t *testing.T) *fakeBuild {
 
 	encContent := tacttest.Encoding(rows)
 	encBlob, encE := tacttest.Plain(encContent)
+	f.encE = encE
 	f.cdn.Put("data", encE, "", encBlob) // the encoding file is loose on the CDN
 
 	f.archBytes = archive.Bytes()
@@ -118,6 +121,41 @@ func (f *fakeBuild) run(t *testing.T, dir string, change func(*Options)) (*Repor
 	return Run(context.Background(), opts)
 }
 
+// damageStored flips the last byte of a stored file in the game's local storage.
+func damageStored(t *testing.T, dir string, e tact.Key) {
+	t.Helper()
+	st, err := casc.OpenReadOnly(filepath.Join(dir, "Data", "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, ok := st.Lookup(e)
+	st.Close()
+	if !ok {
+		t.Fatalf("%s not in local storage", e)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "Data", "data", fmt.Sprintf("data.%03d", l.Archive)), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	b := make([]byte, 1)
+	at := l.Offset + int64(l.Size) - 1
+	f.ReadAt(b, at)
+	b[0] ^= 1
+	f.WriteAt(b, at)
+}
+
+func stored(t *testing.T, dir string, e tact.Key) bool {
+	t.Helper()
+	st, err := casc.OpenReadOnly(filepath.Join(dir, "Data", "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	data, err := st.Read(e)
+	return err == nil && tact.VerifyBLTE(data, e) == nil
+}
+
 func (f *fakeBuild) requests() int {
 	n := len(f.cdn.Requests)
 	f.cdn.Requests = nil
@@ -151,9 +189,19 @@ func TestInstallVerifyRepair(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(game, "Wow.exe")); err == nil {
 		t.Error("the Windows exe was installed for OSX")
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".everlake", "staged", f.data["windows-art"].String()[:2],
-		f.data["windows-art"].String())); err == nil {
-		t.Error("Windows-only data was staged for OSX")
+	if stored(t, dir, f.data["windows-art"]) {
+		t.Error("Windows-only data was stored for OSX")
+	}
+	for _, e := range []tact.Key{f.data["mac-art"], f.data["shared-art"], f.encE} {
+		if !stored(t, dir, e) {
+			t.Errorf("%s not in local storage", e)
+		}
+	}
+	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
+	wantRow := fmt.Sprintf("us|1|%s|%s|||tpr/test|%s|http://%s/?maxhosts=4|OSX enUS speech?:OSX enUS text?|||1.60.1.1||wowf\n",
+		f.pin.BuildConfig, f.pin.CDNConfig, f.cdn.Host(), f.cdn.Host())
+	if !strings.HasPrefix(string(bi), "Branch!STRING:0|Active!DEC:1|") || !strings.HasSuffix(string(bi), wantRow) {
+		t.Errorf(".build.info:\n%s\nwant the row\n%s", bi, wantRow)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Data", "indices", f.archive.String()+".index")); err != nil {
 		t.Error("archive index not kept in Data/indices")
@@ -172,13 +220,10 @@ func TestInstallVerifyRepair(t *testing.T) {
 		t.Errorf("verify made %d CDN requests", n)
 	}
 
-	// Damage one loose file, delete another, damage a staged data file.
+	// Damage one loose file, delete another, damage a stored data file.
 	os.WriteFile(mac, append([]byte{0}, f.macBinary[1:]...), 0o755)
 	os.Remove(filepath.Join(game, "Utils", "readme.txt"))
-	staged := filepath.Join(dir, ".everlake", "staged", f.data["mac-art"].String()[:2], f.data["mac-art"].String())
-	b, _ := os.ReadFile(staged)
-	b[len(b)-1] ^= 1
-	os.WriteFile(staged, b, 0o644)
+	damageStored(t, dir, f.data["mac-art"])
 
 	rep, err = f.run(t, dir, func(o *Options) { o.Verify = true })
 	if err != nil {
@@ -275,8 +320,8 @@ func TestVerifyWritesNothing(t *testing.T) {
 	if _, err := f.run(t, dir, nil); err != nil {
 		t.Fatal(err)
 	}
-	// Damage a config and an index, and delete the staged encoding file: verify must report all three, and leave
-	// them as they are.
+	// Damage a config, an index and the stored encoding file, and delete .build.info: verify must report all four,
+	// and leave them as they are.
 	cfg := filepath.Join(dir, "Data", "config", f.pin.BuildConfig[:2], f.pin.BuildConfig[2:4], f.pin.BuildConfig)
 	b, _ := os.ReadFile(cfg)
 	os.WriteFile(cfg, append(b, '\n'), 0o644)
@@ -284,32 +329,26 @@ func TestVerifyWritesNothing(t *testing.T) {
 	ib, _ := os.ReadFile(index)
 	ib[0] ^= 1
 	os.WriteFile(index, ib, 0o644)
-	var enc string
-	filepath.Walk(filepath.Join(dir, ".everlake", "staged"), func(p string, info os.FileInfo, err error) error {
-		if data, _ := os.ReadFile(p); info.Mode().IsRegular() && len(data) > 0 {
-			if d, err := tact.DecodeBLTE(data); err == nil && len(d) > 2 && string(d[:2]) == "EN" {
-				enc = p
-			}
-		}
-		return nil
-	})
-	if enc == "" {
-		t.Fatal("no staged encoding file")
-	}
-	os.Remove(enc)
+	damageStored(t, dir, f.encE)
+	bi := filepath.Join(dir, ".build.info")
+	os.Remove(bi)
 
 	rep, err := f.run(t, dir, func(o *Options) { o.Verify = true })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Bad) != 2 || len(rep.Missing) != 1 || rep.Missing[0] != enc {
+	if len(rep.Bad) != 3 || len(rep.Missing) != 1 || rep.Missing[0] != bi ||
+		!strings.Contains(strings.Join(rep.Bad, " "), f.encE.String()) {
 		t.Fatalf("verify: bad %v, missing %v", rep.Bad, rep.Missing)
 	}
 	if got, _ := os.ReadFile(cfg); bytes.Equal(got, b) {
 		t.Error("verify repaired the config")
 	}
-	if _, err := os.Stat(enc); err == nil {
+	if stored(t, dir, f.encE) {
 		t.Error("verify wrote the encoding file back")
+	}
+	if _, err := os.Stat(bi); err == nil {
+		t.Error("verify wrote .build.info")
 	}
 	if rep, err := f.run(t, dir, nil); err != nil || rep.Failed() {
 		t.Fatalf("repair: %+v %v", rep, err)
@@ -377,5 +416,66 @@ func TestVerifyPartialInstall(t *testing.T) {
 	rep, err = f.run(t, dir, func(o *Options) { o.Verify = true })
 	if err != nil || len(rep.Missing) != 1 {
 		t.Fatalf("full verify of a trial install should miss 1 file: %+v %v", rep, err)
+	}
+}
+
+func TestStagedFilesMoveIntoStorage(t *testing.T) {
+	// A folder an earlier launcher filled keeps its data files in .everlake/staged. Installing again moves them into
+	// local storage without fetching them, and removes the staged folder.
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := casc.OpenReadOnly(filepath.Join(dir, "Data", "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(dir, ".everlake", "staged")
+	keys := append([]tact.Key{f.encE}, f.data["mac-art"], f.data["shared-art"])
+	for _, e := range keys {
+		data, err := st.Read(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(staged, e.String()[:2], e.String())
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, data, 0o644)
+	}
+	st.Close()
+	// A damaged staged file is left out and fetched again; a leftover temporary file is ignored.
+	bad := filepath.Join(staged, keys[1].String()[:2], keys[1].String())
+	b, _ := os.ReadFile(bad)
+	b[len(b)-1] ^= 1
+	os.WriteFile(bad, b, 0o644)
+	os.WriteFile(filepath.Join(staged, ".part-123"), []byte("half"), 0o644)
+	os.RemoveAll(filepath.Join(dir, "Data", "data"))
+	os.Remove(filepath.Join(dir, ".everlake", "archives.json"))
+
+	f.requests()
+	rep, err := f.run(t, dir, nil)
+	if err != nil || rep.Failed() {
+		t.Fatalf("install over staged files: %+v %v", rep, err)
+	}
+	// The encoding file and shared-art come from staged. The install and download manifests are fetched and stored
+	// before the data stage (so they count as kept there); root, the TVFS manifest and the damaged mac-art are
+	// fetched in it.
+	if rep.DataFetched != 3 || rep.DataKept != 4 {
+		t.Errorf("fetched %d, kept %d", rep.DataFetched, rep.DataKept)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Errorf("staged folder kept: %v", err)
+	}
+	if rep, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err != nil || rep.Failed() {
+		t.Fatalf("verify: %+v %v", rep, err)
+	}
+}
+
+func TestBuildInfoTags(t *testing.T) {
+	known := []tact.Tag{{Name: "Windows", Type: tact.TagPlatform}, {Name: "x86_64", Type: tact.TagArchitecture},
+		{Name: "enUS", Type: tact.TagLocale}, {Name: "US", Type: tact.TagRegion}, {Name: "speech", Type: tact.TagCategory}}
+	got := buildInfoTags([]string{"Windows", "x86_64", "enUS", "US"}, known)
+	if want := "Windows x86_64 US? enUS speech?:Windows x86_64 US? enUS text?"; got != want {
+		t.Errorf("tags = %q, want %q", got, want)
 	}
 }
