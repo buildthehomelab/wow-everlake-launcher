@@ -3,11 +3,13 @@ package casc
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
@@ -111,8 +113,8 @@ func TestRoundTrip(t *testing.T) {
 		if l.Offset+int64(l.Size) > 4096 {
 			t.Errorf("%s runs past the archive limit", e)
 		}
-		if int(l.bucket) != Bucket(short(e)) {
-			t.Errorf("%s listed in bucket %d", e, l.bucket)
+		if _, ok := s.buckets[Bucket(short(e))].entries[short(e)]; !ok {
+			t.Errorf("%s not listed in its bucket", e)
 		}
 	}
 	if len(archives) < 3 {
@@ -202,39 +204,11 @@ func TestHeaderMismatch(t *testing.T) {
 	s, _ = Open(data, "")
 	a := short(order[0])
 	l1, _ := s.Lookup(order[1])
-	l0 := s.entries[a]
-	l1.bucket = l0.bucket
-	s.entries[a] = l1
+	s.buckets[Bucket(a)].entries[a] = l1
 	if _, err := s.Read(order[0]); err == nil {
 		t.Error("a header naming another key was accepted")
 	}
 	s.Close()
-}
-
-func TestBadIndexRefused(t *testing.T) {
-	dir := t.TempDir()
-	data := filepath.Join(dir, "data")
-	s, _ := Open(data, "")
-	blobs, order := files(20)
-	for _, e := range order {
-		s.Add(e, blobs[e])
-	}
-	s.Close()
-	list, _ := os.ReadDir(data)
-	var idx []string
-	for _, f := range list {
-		if idxName.MatchString(f.Name()) {
-			idx = append(idx, f.Name())
-		}
-	}
-	sort.Strings(idx)
-	p := filepath.Join(data, idx[0])
-	b, _ := os.ReadFile(p)
-	b[blockAt+8] ^= 1 // first entry's key
-	os.WriteFile(p, b, 0o644)
-	if _, err := Open(data, ""); err == nil {
-		t.Error("an index with a wrong checksum was accepted")
-	}
 }
 
 func TestLeftoverArchiveRemoved(t *testing.T) {
@@ -291,7 +265,7 @@ func TestKeepsClientEntries(t *testing.T) {
 	arch := append(entryHeader(e, uint32(headerLen+len(blob)), 0), blob...)
 	os.WriteFile(filepath.Join(data, "data.000"), arch, 0o644)
 	name := fmt.Sprintf("%02x%08x.idx", b, 0x23)
-	os.WriteFile(filepath.Join(data, name), buildIndex(b, []entry{{k, Loc{Size: uint32(len(arch))}}}), 0o644)
+	os.WriteFile(filepath.Join(data, name), buildIndex(b, []entry{{k, Loc{Size: uint32(len(arch))}}}, nil), 0o644)
 
 	s, err := Open(data, "")
 	if err != nil {
@@ -346,4 +320,168 @@ func TestWriteFixture(t *testing.T) {
 	}
 	sort.Strings(keys)
 	os.WriteFile(filepath.Join(out, "keys.txt"), []byte(fmt.Sprintln(keys)), 0o644)
+}
+
+// clientStorage writes a storage as a client might leave it: one archive, and key tables with the given entries per
+// bucket, a header flags byte the writer doesn't use, and old bytes after the entries.
+func clientStorage(t *testing.T, data string, per map[int][]entry) {
+	t.Helper()
+	os.MkdirAll(data, 0o755)
+	for b, es := range per {
+		f := buildIndex(b, es, nil)
+		f[11] = 0x5a // header flags byte
+		h := f[8:24]
+		binary.LittleEndian.PutUint32(f[4:], hashlittle(h, 0))
+		copy(f[len(f)-16:], "old client bytes")
+		os.WriteFile(filepath.Join(data, fmt.Sprintf("%02x%08x.idx", b, 0x23)), f, 0o644)
+	}
+}
+
+func TestClientDuplicatesAndBytesKept(t *testing.T) {
+	// A key the client lists in its bucket and in the next one keeps both listings when this package rewrites one of
+	// the two tables; the rewritten table keeps its header bytes and the bytes after its entries.
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	blob, e := tacttest.Plain([]byte("client file"))
+	arch := append(entryHeader(e, uint32(headerLen+len(blob)), 0), blob...)
+	k := short(e)
+	b := Bucket(k)
+	loc := Loc{Size: uint32(len(arch))}
+	clientStorage(t, data, map[int][]entry{b: {{k, loc}}, (b + 1) % 16: {{k, loc}}})
+	os.WriteFile(filepath.Join(data, "data.000"), arch, 0o644)
+
+	s, err := Open(data, filepath.Join(dir, "own.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add files until one lands in bucket b.
+	blobs, order := files(80)
+	for _, x := range order {
+		s.Add(x, blobs[x])
+	}
+	if len(s.buckets[b].entries) < 2 {
+		t.Fatal("no added file landed in the client's bucket")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []int{b, (b + 1) % 16} {
+		p := filepath.Join(data, fmt.Sprintf("%02x%08x.idx", at, 0x23))
+		f, _ := os.ReadFile(p)
+		es, err := parseIndex(f, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, x := range es {
+			found = found || x.key == k
+		}
+		if !found {
+			t.Errorf("client key lost from bucket %d", at)
+		}
+		if f[11] != 0x5a {
+			t.Errorf("bucket %d: header flags byte not kept", at)
+		}
+		if string(f[len(f)-16:]) != "old client bytes" {
+			t.Errorf("bucket %d: bytes after the entries not kept", at)
+		}
+	}
+}
+
+func TestReplacedEntryStaysInItsBucket(t *testing.T) {
+	// An entry the client put in the next bucket over is replaced there, not moved to the formula's bucket.
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	blob, e := tacttest.Plain([]byte("client file in the next bucket"))
+	k := short(e)
+	next := (Bucket(k) + 1) % 16
+	clientStorage(t, data, map[int][]entry{next: {{k, Loc{Size: uint32(headerLen + len(blob))}}}})
+	os.WriteFile(filepath.Join(data, "data.000"), bytes.Repeat([]byte{0}, headerLen+len(blob)), 0o644)
+	s, _ := Open(data, "")
+	if _, err := s.Read(e); err == nil {
+		t.Fatal("a zeroed file read back")
+	}
+	s.Add(e, blob)
+	if _, ok := s.buckets[next].entries[k]; !ok {
+		t.Error("replaced entry moved out of its bucket")
+	}
+	if got, err := s.Read(e); err != nil || !bytes.Equal(got, blob) {
+		t.Errorf("after replacing: %v", err)
+	}
+	s.Close()
+}
+
+func TestBadIndexKeptAndRebuilt(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	own := filepath.Join(dir, "own.json")
+	s, _ := Open(data, own)
+	blobs, order := files(40)
+	for _, e := range order {
+		s.Add(e, blobs[e])
+	}
+	s.Close()
+	k := short(order[0])
+	p := filepath.Join(data, fmt.Sprintf("%02x%08x.idx", Bucket(k), 1))
+	b, _ := os.ReadFile(p)
+	b[blockAt+8] ^= 1
+	os.WriteFile(p, b, 0o644)
+
+	ro, err := OpenReadOnly(data)
+	if err != nil {
+		t.Fatalf("read-only open of a storage with a bad key table: %v", err)
+	}
+	if len(ro.Bad()) != 1 {
+		t.Errorf("bad = %v", ro.Bad())
+	}
+	if _, err := ro.Read(order[0]); err != ErrNotStored {
+		t.Errorf("file in a bad table: %v", err)
+	}
+	ro.Close()
+	if got, _ := os.ReadFile(p); !bytes.Equal(got, b) {
+		t.Error("read-only open changed the bad table")
+	}
+
+	s, err = Open(data, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backups, _ := filepath.Glob(filepath.Join(dir, "bad-index", "*"))
+	if len(backups) != 1 {
+		t.Errorf("backups: %v", backups)
+	}
+	s.Add(order[0], blobs[order[0]])
+	s.Close()
+	s, _ = OpenReadOnly(data)
+	defer s.Close()
+	if len(s.Bad()) != 0 {
+		t.Errorf("still bad after rebuilding: %v", s.Bad())
+	}
+	if got, err := s.Read(order[0]); err != nil || !bytes.Equal(got, blobs[order[0]]) {
+		t.Errorf("re-added file: %v", err)
+	}
+}
+
+func TestArchiveTakenByOthers(t *testing.T) {
+	// Someone else makes the next archive number after Open listed the folder: the add fails, and the number isn't
+	// recorded as ours (so it's never removed as a leftover).
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	own := filepath.Join(dir, "own.json")
+	s, _ := Open(data, own)
+	os.WriteFile(filepath.Join(data, "data.000"), []byte("client's"), 0o644)
+	blobs, order := files(1)
+	if err := s.Add(order[0], blobs[order[0]]); err == nil {
+		t.Fatal("added into an archive someone else made")
+	}
+	s.Close()
+	b, _ := os.ReadFile(own)
+	if strings.Contains(string(b), "0") {
+		t.Errorf("own.json = %s", b)
+	}
+	s, _ = Open(data, own)
+	defer s.Close()
+	if _, err := os.Stat(filepath.Join(data, "data.000")); err != nil {
+		t.Error("the other archive was removed")
+	}
 }

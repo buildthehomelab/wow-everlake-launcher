@@ -53,6 +53,10 @@ type Options struct {
 	MaxPriority *int  // only download manifest entries at or below this priority
 	DataLimit   int64 // stop the data stage after about this many bytes (0: no limit); for trial runs
 
+	// GameHosts are the CDN hosts written into .build.info, which the game streams missing files from (default: the
+	// CDN client's hosts). A mirror used only for the install is left out this way.
+	GameHosts []string
+
 	Log func(format string, args ...any)
 }
 
@@ -101,6 +105,11 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	} else if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
+	unlock, err := lockFolder(opts.Dir, opts.Verify)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	stop := r.progress()
 	defer stop()
 	rep, err := r.do(ctx)
@@ -135,6 +144,13 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("local storage: %w", err)
+	}
+	for _, b := range r.st.Bad() {
+		if opts.Verify {
+			r.problem(b, true)
+		} else {
+			opts.Log("a key table couldn't be read and is built again (a copy is in .everlake/bad-index): %s", b)
+		}
 	}
 	if err := r.moveStaged(); err != nil {
 		return nil, fmt.Errorf("moving staged files into local storage: %w", err)
@@ -223,8 +239,8 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 			return nil, err
 		}
 	}
-	if err := r.buildInfo(inst); err != nil {
-		return nil, err
+	if opts.Verify {
+		r.checkBuildInfo()
 	}
 	r.rep.BytesDownloaded = r.downloaded.Load()
 	sort.Strings(r.rep.Bad)
@@ -232,6 +248,9 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 	if !opts.Verify && !r.rep.Failed() {
 		if err := r.st.Flush(); err != nil {
 			return nil, fmt.Errorf("local storage: %w", err)
+		}
+		if err := r.writeBuildInfo(inst); err != nil {
+			return nil, err
 		}
 		if err := r.writeState(); err != nil {
 			return nil, err
@@ -349,18 +368,26 @@ func locate(idx []namedIndex, want map[tact.Key]*where) {
 
 // --- .build.info --------------------------------------------------------------------------------------------------
 
-// buildInfo writes .build.info (or, verifying, checks it names the pinned build).
-func (r *run) buildInfo(inst *tact.Install) error {
-	p := filepath.Join(r.Dir, ".build.info")
-	if r.Verify {
-		data, err := os.ReadFile(p)
-		row := "|" + r.Pin.BuildConfig + "|" + r.Pin.CDNConfig + "|"
-		if err != nil || !strings.Contains(string(data), row) || !strings.Contains(string(data), "|"+r.Pin.Version+"|") {
-			r.problem(p, err == nil)
-		}
-		return nil
+// writeBuildInfo writes .build.info, after a complete install. It names GameHosts (Blizzard's), not a mirror the
+// install may have used.
+func (r *run) writeBuildInfo(inst *tact.Install) error {
+	hosts := r.GameHosts
+	if len(hosts) == 0 {
+		hosts = r.CDN.Hosts
 	}
-	return writeFile(p, buildInfo(r.Pin, r.CDN.Hosts, buildInfoTags(r.Tags, inst.Tags)), 0o644)
+	return writeFile(filepath.Join(r.Dir, ".build.info"), buildInfo(r.Pin, hosts, buildInfoTags(r.Tags, inst.Tags)),
+		0o644)
+}
+
+// checkBuildInfo reports .build.info if it's missing or names another build.
+func (r *run) checkBuildInfo() {
+	p := filepath.Join(r.Dir, ".build.info")
+	data, err := os.ReadFile(p)
+	row := "|" + r.Pin.BuildConfig + "|" + r.Pin.CDNConfig + "|"
+	if err != nil || !strings.Contains(string(data), row) || !strings.Contains(string(data), "|"+r.Pin.Version+"|") ||
+		!strings.HasSuffix(strings.TrimSpace(string(data)), "|"+r.Pin.Product) {
+		r.problem(p, err == nil)
+	}
 }
 
 // --- stored files ------------------------------------------------------------------------------------------------
@@ -389,7 +416,21 @@ func (r *run) moveStaged() error {
 		r.Log("note: %s holds files an earlier launcher fetched; install moves them into the game's storage", root)
 		return nil
 	}
-	moved := 0
+	// Staged files are removed in batches, once the storage holding them is flushed, so moving needs little extra
+	// disk space.
+	var moved int
+	var batch []string
+	var batchBytes int64
+	done := func() error {
+		if err := r.st.Flush(); err != nil {
+			return err
+		}
+		for _, p := range batch {
+			os.Remove(p)
+		}
+		batch, batchBytes = nil, 0
+		return nil
+	}
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -399,6 +440,7 @@ func (r *run) moveStaged() error {
 			return nil // a leftover temporary file
 		}
 		if have, err := r.st.Read(e); err == nil && tact.VerifyBLTE(have, e) == nil {
+			batch = append(batch, p)
 			return nil
 		}
 		data, err := os.ReadFile(p)
@@ -406,19 +448,29 @@ func (r *run) moveStaged() error {
 			return err
 		}
 		if tact.VerifyBLTE(data, e) != nil {
-			return nil
+			return nil // damaged: fetched again like any missing file
+		}
+		if err := r.st.Add(e, data); err != nil {
+			return err
 		}
 		moved++
-		return r.st.Add(e, data)
+		batch = append(batch, p)
+		if batchBytes += int64(len(data)); batchBytes >= 256<<20 {
+			return done()
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if err := r.st.Flush(); err != nil {
+	if err := done(); err != nil {
 		return err
 	}
 	r.Log("moved %d files from %s into the game's storage", moved, root)
-	return os.RemoveAll(root)
+	if err := os.RemoveAll(root); err != nil {
+		r.Log("note: couldn't remove %s (%v); its files are in the game's storage now, so it can be deleted", root, err)
+	}
+	return nil
 }
 
 // fetchStored gets one stored file from the CDN. check runs on each host's answer after the encoded-key check, so
@@ -779,29 +831,7 @@ func (r *run) save(p string, data []byte, mode os.FileMode) error {
 
 // writeFile writes through a temporary file and a rename, so a cut-off run never leaves a half file under the
 // real name.
-func writeFile(p string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".part-*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), mode); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), p)
-}
+func writeFile(p string, data []byte, mode os.FileMode) error { return casc.WriteFile(p, data, mode) }
 
 func (r *run) count(n *int) {
 	r.mu.Lock()

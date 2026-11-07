@@ -9,8 +9,10 @@
 // client then read. The writer here writes the same layout: version 7 index files with one continuous block of
 // entries, and the same 30-byte header in front of each stored file.
 //
-// Files this package writes go into archives of their own (never into ones the client made, whose free space the
-// client tracks itself), and index entries the client made are kept as they are.
+// What the client made is left as it was: files this package writes go into archives of its own (never into ones the
+// client made, whose free space the client tracks itself), and a key table it rewrites keeps every entry, its header
+// bytes and the bytes after its entries. About 1% of the entries a real client writes sit in the bucket after the
+// formula's ("cross reference"); lookups check both, as the client does, and an entry stays in the bucket it was in.
 package casc
 
 import (
@@ -24,7 +26,9 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
 )
@@ -32,14 +36,16 @@ import (
 const (
 	segmentBits  = 30
 	archiveLimit = 1 << segmentBits // an offset has 30 bits, so an archive holds at most 1 GB
+	maxArchives  = 1000             // data.000 to data.999
 	headerLen    = 30               // the header in front of every stored file
 	keyLen       = 9                // index entries keep the first 9 bytes of the encoded key
 	entryLen     = keyLen + 5 + 4   // key, archive and offset (5 bytes, big endian), size (4 bytes, little endian)
 	blockAt      = 0x20             // where the entry block starts in an index file
 	maxOffset    = 0xffc0000000     // the "maximum file offset" field Blizzard's files carry
-	// FlushEvery is how many bytes Add writes before it writes the index files again, so an interrupted run loses
-	// at most this much.
+	// FlushEvery and FlushAfter: Add writes the index files again after this many bytes or this much time, whichever
+	// comes first, so a run that's killed loses at most that much download.
 	FlushEvery = 256 << 20
+	FlushAfter = 30 * time.Second
 )
 
 // ErrNotStored means the key has no entry in the index files.
@@ -68,26 +74,34 @@ type Loc struct {
 	Archive int
 	Offset  int64
 	Size    uint32
-	bucket  uint8 // the index file it's listed in (the client sometimes uses the next bucket over)
 }
 
-// Storage is one open Data/data folder. Read is safe to call from many goroutines; Add serialises its writes.
+// bucketFile is one key table: its file name (kept when rewritten), the file as last read or written (whose header
+// and tail are kept), and its entries.
+type bucketFile struct {
+	name    string
+	orig    []byte
+	entries map[ShortKey]Loc
+	dirty   bool
+}
+
+// Storage is one open Data/data folder. Read is safe to call from many goroutines, also while Add writes.
 type Storage struct {
 	dir     string
 	ownPath string
 
 	mu       sync.Mutex
-	names    [16]string // index file name per bucket, kept when rewritten; "" = no file yet
-	entries  map[ShortKey]Loc
-	dirty    [16]bool
-	archives map[int]bool // every data.NNN in the folder
+	buckets  [16]*bucketFile
+	archives map[int]bool // every data.NNN in the folder or named by an entry
 	own      []int        // archives this package made (recorded in ownPath)
 	readers  map[int]*os.File
+	bad      []string // key tables that couldn't be read
 
 	w         *os.File // the archive being written, or nil
 	wNum      int
 	wOff      int64
 	unflushed int64
+	lastFlush time.Time
 
 	limit, flushEvery int64 // archiveLimit and FlushEvery; smaller in tests
 	readOnly          bool
@@ -95,20 +109,25 @@ type Storage struct {
 
 var (
 	idxName  = regexp.MustCompile(`^([0-9a-f]{2})([0-9a-f]{8})\.idx$`)
-	dataName = regexp.MustCompile(`^data\.(\d{3})$`)
+	dataName = regexp.MustCompile(`^data\.(\d{3,})$`)
 )
 
 // Open reads the storage in dir (made if missing). ownPath is a file that records the archives this package made:
-// archives listed there that no index entry points at are left over from an interrupted run and are removed.
+// archives listed there that no index entry points at are left over from an interrupted run and are removed. A key
+// table that can't be read is copied to bad-index/ next to ownPath and started again empty (its files are then
+// missing, so an install fetches them again). The caller must make sure no other process writes the folder.
 func Open(dir, ownPath string) (*Storage, error) { return open(dir, ownPath, false) }
 
 // OpenReadOnly reads the storage in dir and never writes: a missing folder is an empty storage, leftovers stay,
-// and Add fails.
+// a key table that can't be read is reported by Bad and counts as empty, and Add fails.
 func OpenReadOnly(dir string) (*Storage, error) { return open(dir, "", true) }
 
 func open(dir, ownPath string, readOnly bool) (*Storage, error) {
-	s := &Storage{dir: dir, ownPath: ownPath, entries: map[ShortKey]Loc{}, archives: map[int]bool{},
-		readers: map[int]*os.File{}, limit: archiveLimit, flushEvery: FlushEvery, readOnly: readOnly}
+	s := &Storage{dir: dir, ownPath: ownPath, archives: map[int]bool{}, readers: map[int]*os.File{},
+		limit: archiveLimit, flushEvery: FlushEvery, readOnly: readOnly, lastFlush: time.Now()}
+	for b := range s.buckets {
+		s.buckets[b] = &bucketFile{entries: map[ShortKey]Loc{}}
+	}
 	if !readOnly {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -123,33 +142,46 @@ func open(dir, ownPath string, readOnly bool) (*Storage, error) {
 	}
 	var versions [16]uint64
 	for _, f := range list {
-		if m := idxName.FindStringSubmatch(f.Name()); m != nil {
+		name := f.Name()
+		if m := idxName.FindStringSubmatch(name); m != nil {
 			b, _ := strconv.ParseUint(m[1], 16, 8)
 			v, _ := strconv.ParseUint(m[2], 16, 32)
-			if b < 16 && (s.names[b] == "" || v > versions[b]) {
-				s.names[b], versions[b] = f.Name(), v
+			if b < 16 && (s.buckets[b].name == "" || v > versions[b]) {
+				s.buckets[b].name, versions[b] = name, v
 			}
 		}
-		if m := dataName.FindStringSubmatch(f.Name()); m != nil {
+		if m := dataName.FindStringSubmatch(name); m != nil {
 			n, _ := strconv.Atoi(m[1])
 			s.archives[n] = true
 		}
+		if strings.HasPrefix(name, ".part-") && !readOnly {
+			os.Remove(filepath.Join(dir, name)) // a temporary file from a run that was cut off
+		}
 	}
-	for b, name := range s.names {
-		if name == "" {
+	for b, bf := range s.buckets {
+		if bf.name == "" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, name))
+		p := filepath.Join(dir, bf.name)
+		data, err := os.ReadFile(p)
 		if err != nil {
 			return nil, err
 		}
 		entries, err := parseIndex(data, b)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+			s.bad = append(s.bad, fmt.Sprintf("%s (%v)", p, err))
+			if !readOnly {
+				if err := s.keepBad(bf.name, data); err != nil {
+					return nil, err
+				}
+				bf.dirty = true // written again with what gets added
+			}
+			continue
 		}
+		bf.orig = data
 		for _, e := range entries {
-			e.loc.bucket = uint8(b)
-			s.entries[e.key] = e.loc
+			bf.entries[e.key] = e.loc
+			s.archives[e.loc.Archive] = true
 		}
 	}
 	if readOnly {
@@ -159,8 +191,10 @@ func open(dir, ownPath string, readOnly bool) (*Storage, error) {
 		return nil, err
 	}
 	used := map[int]bool{}
-	for _, l := range s.entries {
-		used[l.Archive] = true
+	for _, bf := range s.buckets {
+		for _, l := range bf.entries {
+			used[l.Archive] = true
+		}
 	}
 	var keep []int
 	for _, n := range s.own {
@@ -181,6 +215,18 @@ func open(dir, ownPath string, readOnly bool) (*Storage, error) {
 	}
 	return s, nil
 }
+
+// keepBad copies a key table that couldn't be read next to ownPath, so nothing the client made is lost for good.
+func (s *Storage) keepBad(name string, data []byte) error {
+	if s.ownPath == "" {
+		return nil
+	}
+	p := filepath.Join(filepath.Dir(s.ownPath), "bad-index", time.Now().UTC().Format("20060102-150405")+"-"+name)
+	return WriteFile(p, data, 0o644)
+}
+
+// Bad lists the key tables that couldn't be read, with why.
+func (s *Storage) Bad() []string { return append([]string(nil), s.bad...) }
 
 func (s *Storage) archivePath(n int) string { return filepath.Join(s.dir, fmt.Sprintf("data.%03d", n)) }
 
@@ -212,21 +258,36 @@ func (s *Storage) writeOwn() error {
 	data, _ := json.Marshal(struct {
 		Archives []int `json:"archives"`
 	}{s.own})
-	return writeFile(s.ownPath, append(data, '\n'))
+	return WriteFile(s.ownPath, append(data, '\n'), 0o644)
 }
 
 // Len is the number of index entries.
 func (s *Storage) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.entries)
+	n := 0
+	for _, bf := range s.buckets {
+		n += len(bf.entries)
+	}
+	return n
+}
+
+// find looks a key up in its bucket, then in the next one. Callers hold s.mu.
+func (s *Storage) find(k ShortKey) (Loc, int, bool) {
+	b := Bucket(k)
+	for _, at := range []int{b, (b + 1) % 16} {
+		if l, ok := s.buckets[at].entries[k]; ok {
+			return l, at, true
+		}
+	}
+	return Loc{}, 0, false
 }
 
 // Lookup finds a key's place.
 func (s *Storage) Lookup(k tact.Key) (Loc, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	l, ok := s.entries[short(k)]
+	l, _, ok := s.find(short(k))
 	return l, ok
 }
 
@@ -234,7 +295,7 @@ func (s *Storage) Lookup(k tact.Key) (Loc, bool) {
 // checking the bytes against the key is the caller's job (tact.VerifyBLTE).
 func (s *Storage) Read(k tact.Key) ([]byte, error) {
 	s.mu.Lock()
-	l, ok := s.entries[short(k)]
+	l, _, ok := s.find(short(k))
 	var f *os.File
 	var err error
 	if ok {
@@ -247,8 +308,9 @@ func (s *Storage) Read(k tact.Key) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if l.Size < headerLen {
-		return nil, fmt.Errorf("%s: index size %d is shorter than the header", k, l.Size)
+	if l.Size < headerLen || int64(l.Size) > archiveLimit || l.Offset+int64(l.Size) > archiveLimit {
+		return nil, fmt.Errorf("%s: index entry for data.%03d at %d has an impossible size %d", k, l.Archive,
+			l.Offset, l.Size)
 	}
 	buf := make([]byte, l.Size)
 	if _, err := f.ReadAt(buf, l.Offset); err != nil {
@@ -268,7 +330,8 @@ func (s *Storage) Read(k tact.Key) ([]byte, error) {
 	return buf[headerLen:], nil
 }
 
-// reader returns an open handle on archive n. Callers hold s.mu.
+// reader returns an open handle on archive n. Handles stay open until Close, so a Read never finds its file closed
+// under it. Callers hold s.mu.
 func (s *Storage) reader(n int) (*os.File, error) {
 	if s.w != nil && n == s.wNum {
 		return s.w, nil
@@ -285,7 +348,7 @@ func (s *Storage) reader(n int) (*os.File, error) {
 }
 
 // Add stores a file (BLTE bytes named by encoded key k) in this package's current archive, and lists it in the
-// index, replacing any entry the key had. The caller checks the bytes first.
+// index, replacing any entry the key had (in the bucket that entry was in). The caller checks the bytes first.
 func (s *Storage) Add(k tact.Key, blob []byte) error {
 	if s.readOnly {
 		return errors.New("local storage is open read-only")
@@ -308,30 +371,34 @@ func (s *Storage) Add(k tact.Key, blob []byte) error {
 		return err
 	}
 	key := short(k)
-	if old, ok := s.entries[key]; ok {
-		s.dirty[old.bucket] = true
+	target := Bucket(key)
+	if _, at, ok := s.find(key); ok {
+		target = at
 	}
-	b := Bucket(key)
-	s.entries[key] = Loc{Archive: s.wNum, Offset: s.wOff, Size: uint32(size), bucket: uint8(b)}
-	s.dirty[b] = true
+	for _, at := range []int{Bucket(key), (Bucket(key) + 1) % 16} { // a key listed in both loses both listings
+		if _, ok := s.buckets[at].entries[key]; ok {
+			delete(s.buckets[at].entries, key)
+			s.buckets[at].dirty = true
+		}
+	}
+	s.buckets[target].entries[key] = Loc{Archive: s.wNum, Offset: s.wOff, Size: uint32(size)}
+	s.buckets[target].dirty = true
 	s.wOff += size
 	s.unflushed += size
-	if s.unflushed >= s.flushEvery {
+	if s.unflushed >= s.flushEvery || time.Since(s.lastFlush) >= FlushAfter {
 		return s.flush()
 	}
 	return nil
 }
 
-// roll closes the current archive (writing the index files) and starts a new one after every existing archive.
-// Callers hold s.mu.
+// roll finishes the current archive (writing the index files) and starts a new one numbered after every archive
+// in the folder and every archive an entry names. Callers hold s.mu.
 func (s *Storage) roll() error {
 	if s.w != nil {
 		if err := s.flush(); err != nil {
 			return err
 		}
-		if err := s.w.Close(); err != nil {
-			return err
-		}
+		s.readers[s.wNum] = s.w // still read from; closed by Close
 		s.w = nil
 	}
 	n := 0
@@ -340,16 +407,20 @@ func (s *Storage) roll() error {
 			n = a + 1
 		}
 	}
-	if n >= 1<<(40-segmentBits) {
+	if n >= maxArchives {
 		return errors.New("no free archive number left in local storage")
 	}
-	// Record the archive as ours before writing to it, so an interrupted run's leftovers can be found.
+	// Record the archive as ours before writing to it, so an interrupted run's leftovers can be found; take it back
+	// if it can't be made (someone else made that file).
 	s.own = append(s.own, n)
 	if err := s.writeOwn(); err != nil {
+		s.own = s.own[:len(s.own)-1]
 		return err
 	}
 	f, err := os.OpenFile(s.archivePath(n), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
+		s.own = s.own[:len(s.own)-1]
+		s.writeOwn()
 		return err
 	}
 	s.w, s.wNum, s.wOff = f, n, 0
@@ -374,30 +445,23 @@ func (s *Storage) flush() error {
 		}
 	}
 	s.unflushed = 0
-	var any bool
-	for _, d := range s.dirty {
-		any = any || d
-	}
-	if !any {
-		return nil
-	}
-	var per [16][]entry
-	for k, l := range s.entries {
-		if s.dirty[l.bucket] {
-			per[l.bucket] = append(per[l.bucket], entry{k, l})
-		}
-	}
-	for b := range per {
-		if !s.dirty[b] {
+	s.lastFlush = time.Now()
+	for b, bf := range s.buckets {
+		if !bf.dirty {
 			continue
 		}
-		if s.names[b] == "" {
-			s.names[b] = fmt.Sprintf("%02x%08x.idx", b, 1)
+		if bf.name == "" {
+			bf.name = fmt.Sprintf("%02x%08x.idx", b, 1)
 		}
-		if err := writeFile(filepath.Join(s.dir, s.names[b]), buildIndex(b, per[b])); err != nil {
+		entries := make([]entry, 0, len(bf.entries))
+		for k, l := range bf.entries {
+			entries = append(entries, entry{k, l})
+		}
+		data := buildIndex(b, entries, bf.orig)
+		if err := WriteFile(filepath.Join(s.dir, bf.name), data, 0o644); err != nil {
 			return err
 		}
-		s.dirty[b] = false
+		bf.orig, bf.dirty = data, false
 	}
 	return nil
 }
@@ -471,9 +535,11 @@ func parseIndex(data []byte, bucket int) ([]entry, error) {
 	return out, nil
 }
 
-// buildIndex writes a version 7 index file: header, one sorted entry block, and zeros after it, with room to spare
-// (the client's own files have spare room too, and the block's size field says where the entries end).
-func buildIndex(bucket int, entries []entry) []byte {
+// buildIndex writes a version 7 index file with one sorted entry block. Rewriting an existing file (orig) keeps its
+// header bytes and whatever follows the entries, and its size when the entries fit, as casc_local.py does: the
+// block's size field says where the entries end, as in the files the client writes itself. A new file gets
+// Blizzard's header values and at least 64 KiB of spare room, in 64 KiB steps.
+func buildIndex(bucket int, entries []entry, orig []byte) []byte {
 	raw := make([][]byte, len(entries))
 	for i, e := range entries {
 		b := make([]byte, entryLen)
@@ -486,14 +552,26 @@ func buildIndex(bucket int, entries []entry) []byte {
 	}
 	sort.Slice(raw, func(i, j int) bool { return bytes.Compare(raw[i], raw[j]) < 0 })
 	used := blockAt + 8 + len(raw)*entryLen
-	size := (used + 0x10000 + 0xffff) &^ 0xffff // at least 64 KiB spare, in 64 KiB steps
-	out := make([]byte, size)
-	h := out[8:24]
-	binary.LittleEndian.PutUint16(h, 7)
-	h[2], h[3], h[4], h[5], h[6], h[7] = byte(bucket), 0, 4, 5, keyLen, segmentBits
-	binary.LittleEndian.PutUint64(h[8:], maxOffset)
-	binary.LittleEndian.PutUint32(out, 16)
-	binary.LittleEndian.PutUint32(out[4:], hashlittle(h, 0))
+	var out []byte
+	if orig != nil {
+		size := len(orig)
+		if used > size {
+			size = (used + 0x10000 + 0xffff) &^ 0xffff
+		}
+		out = make([]byte, size)
+		copy(out, orig[:blockAt])
+		if used < len(orig) {
+			copy(out[used:], orig[used:])
+		}
+	} else {
+		out = make([]byte, (used+0x10000+0xffff)&^0xffff)
+		h := out[8:24]
+		binary.LittleEndian.PutUint16(h, 7)
+		h[2], h[3], h[4], h[5], h[6], h[7] = byte(bucket), 0, 4, 5, keyLen, segmentBits
+		binary.LittleEndian.PutUint64(h[8:], maxOffset)
+		binary.LittleEndian.PutUint32(out, 16)
+		binary.LittleEndian.PutUint32(out[4:], hashlittle(h, 0))
+	}
 	var hi, lo uint32
 	at := blockAt + 8
 	for _, e := range raw {
@@ -534,8 +612,10 @@ func entryHeader(k tact.Key, size uint32, offset int64) []byte {
 	return head
 }
 
-// writeFile writes through a temporary file and a rename.
-func writeFile(p string, data []byte) error {
+// WriteFile writes a file through a temporary file and a rename, so a cut-off run never leaves a half file under
+// the real name. The rename is retried for a few seconds: on Windows it fails while another program (an
+// antivirus scanner, the search indexer) has the old file open.
+func WriteFile(p string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -543,19 +623,35 @@ func writeFile(p string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tmp.Write(data); err != nil {
+	fail := func(err error) error {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
 	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
+	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
+		return fail(err)
+	}
+	if err := tmp.Chmod(mode); err != nil { // CreateTemp makes it owner-only
+		return fail(err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), p)
+	wait := 20 * time.Millisecond
+	for try := 0; ; try++ {
+		err = os.Rename(tmp.Name(), p)
+		if err == nil || try == 8 {
+			break
+		}
+		time.Sleep(wait)
+		wait *= 2
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+	}
+	return err
 }

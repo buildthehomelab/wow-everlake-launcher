@@ -141,7 +141,9 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 		}
 		opts.PartialData = st.DataLimit > 0
 	}
-	opts.CDN = cdn.New(p.Hosts(ctx, splitTags(*hosts)), p.CDNPath)
+	// The game streams from Blizzard's hosts; a --cdn mirror is only tried first during the install.
+	opts.GameHosts = p.Hosts(ctx, nil)
+	opts.CDN = cdn.New(append(splitTags(*hosts), opts.GameHosts...), p.CDNPath)
 	logf("%s WoW Forever %s into %s (tags %s) from %s", name, p.Version, *dir, strings.Join(opts.Tags, " "),
 		strings.Join(opts.CDN.Hosts, ", "))
 	start := time.Now()

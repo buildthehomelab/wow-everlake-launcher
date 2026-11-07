@@ -479,3 +479,37 @@ func TestBuildInfoTags(t *testing.T) {
 		t.Errorf("tags = %q, want %q", got, want)
 	}
 }
+
+func TestFolderLock(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockFolder(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.run(t, dir, nil); err == nil || !strings.Contains(err.Error(), "in use") {
+		t.Errorf("install while locked: %v", err)
+	}
+	if _, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err == nil {
+		t.Error("verify while locked went ahead")
+	}
+	unlock()
+	if rep, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err != nil || rep.Failed() {
+		t.Errorf("verify after unlock: %+v %v", rep, err)
+	}
+}
+
+func TestBuildInfoNamesGameHosts(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, func(o *Options) { o.GameHosts = []string{"cdn.example"} }); err != nil {
+		t.Fatal(err)
+	}
+	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
+	if !strings.Contains(string(bi), "|cdn.example|http://cdn.example/?maxhosts=4|") || strings.Contains(string(bi), f.cdn.Host()) {
+		t.Errorf(".build.info names the install's mirror:\n%s", bi)
+	}
+}
