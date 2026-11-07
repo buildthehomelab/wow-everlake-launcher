@@ -433,6 +433,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	for _, k := range system {
 		add(k[1])
 	}
+	nsys := len(order)
 	for _, e := range entries {
 		if r.MaxPriority != nil && e.Priority > *r.MaxPriority {
 			continue
@@ -442,7 +443,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	locate(idx, want)
 	r.rep.DataFiles = len(order)
 	r.Log("download manifest: %d of %d stored files match %s (plus the build's own files)",
-		len(order)-len(system), len(dl.Entries), strings.Join(r.Tags, " "))
+		len(order)-nsys, len(dl.Entries), strings.Join(r.Tags, " "))
 
 	// Keep what's already staged and intact.
 	var need []tact.Key
@@ -476,13 +477,21 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	}
 	sort.Slice(need, func(a, b int) bool { return pos[need[a]] < pos[need[b]] })
 	if budget > 0 {
+		// The build's own files sort first (they were added to order first) and never count against the limit.
+		isSystem := map[tact.Key]bool{}
+		for _, k := range system {
+			isSystem[k[1]] = true
+		}
 		var used int64
 		for i, e := range need {
+			if isSystem[e] {
+				continue
+			}
 			size := int64(0)
 			if w := want[e]; w != nil {
 				size = int64(w.size)
 			}
-			if used+size > budget && i > 0 {
+			if used+size > budget && used > 0 {
 				r.rep.DataSkippedByLimit = len(need) - i
 				need = need[:i]
 				break
