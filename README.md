@@ -14,10 +14,15 @@ Work in progress. What works today:
 - `install` fetches the pinned build's configs, archive indexes, encoding file, install and download manifests, then
   the loose game files for your platform (the `.app` or `Wow.exe` and friends) and the data files, checking each
   one.
+- The data files go into the game's own local storage, `Data/data` (`data.NNN` archives and `.idx` key tables, the
+  layout a Battle.net install has), and `.build.info` names the build and the CDN. A folder an earlier launcher
+  filled (with `.everlake/staged/`) is moved over without downloading again.
 - `verify` re-checks what the install fetched (it reads `.everlake/install.json`), writes nothing, and lists what's
   damaged or missing; `install` again repairs exactly those.
-- The data files are **staged** (still encoded, checked) in `.everlake/staged/`. Writing them into the game's own
-  data storage (`Data/data`: `data.NNN` + `.idx`) is the next step, so **the game can't start from this folder yet.**
+- A run that's stopped or killed resumes: the key tables are saved every 30 seconds, and a half-written archive
+  with nothing pointing into it is removed.
+- **Not yet:** starting the game on our realm (login, the server key patch). Whether the game starts from this
+  folder at all is the next test.
 
 ## Use
 
@@ -46,6 +51,7 @@ Every TACT file carries its own hash, and every parser here checks it:
 | stored file (BLTE) | the encoded key is the MD5 of its header; the header lists an MD5 for every chunk |
 | decoded file | the content key is the MD5 of the content (manifests, encoding file, loose game files) |
 | encoding file | every page has an MD5 in the page index |
+| local storage (`Data/data`) | each key table carries Jenkins checksums; each stored file is read back and checked as above |
 
 So a file that parses is the file the pinned build names, byte for byte. Encrypted chunks are checked the same way
 without being decrypted.

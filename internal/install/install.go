@@ -5,10 +5,11 @@
 //
 //	Data/config/ab/cd/<key>     build and CDN config
 //	Data/indices/<key>.index    archive indexes and the loose-file index
+//	Data/data/                  the game's local storage (data.NNN archives, .idx key tables): the download
+//	                            manifest's files and the build's own (encoding, root, TVFS manifests), see casc
 //	<game folder>/...           the install manifest's loose files (the game executable and its friends)
-//
-// The stored files for the game's data storage (Data/data: data.NNN + .idx) are not written in that format yet.
-// Until that writer exists they are kept, still encoded and checked, in .everlake/staged/ab/<encoded key>.
+//	.build.info                 which build this is and which CDN the game streams missing files from
+//	.everlake/                  the launcher's own records (install.json, archives.json)
 package install
 
 import (
@@ -27,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/casc"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
@@ -50,6 +52,10 @@ type Options struct {
 	NoData      bool  // stop after the loose files (skip the download manifest)
 	MaxPriority *int  // only download manifest entries at or below this priority
 	DataLimit   int64 // stop the data stage after about this many bytes (0: no limit); for trial runs
+
+	// GameHosts are the CDN hosts written into .build.info, which the game streams missing files from (default: the
+	// CDN client's hosts). A mirror used only for the install is left out this way.
+	GameHosts []string
 
 	Log func(format string, args ...any)
 }
@@ -78,6 +84,7 @@ type run struct {
 	downloaded atomic.Int64
 	build, cdc tact.Config
 	enc        *tact.Encoding
+	st         *casc.Storage // the game's local storage, Data/data
 }
 
 // Run installs (or with Verify, checks) the pinned build in opts.Dir.
@@ -98,9 +105,24 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	} else if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
+	unlock, err := lockFolder(opts.Dir, opts.Verify)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	stop := r.progress()
 	defer stop()
+	rep, err := r.do(ctx)
+	if r.st != nil {
+		if e := r.st.Close(); e != nil && err == nil {
+			return nil, fmt.Errorf("local storage: %w", e)
+		}
+	}
+	return rep, err
+}
 
+func (r *run) do(ctx context.Context) (*Report, error) {
+	opts := r.Options
 	buildKey, cdnKey := opts.Pin.Keys()
 	var err error
 	if r.build, err = r.config(ctx, buildKey); err != nil {
@@ -113,6 +135,26 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 		return nil, fmt.Errorf("build config is for product %q, the pin says %q", name, opts.Pin.Product)
 	}
 	opts.Log("build %s (%s), CDN config %s", opts.Pin.Version, r.build.One("build-name"), cdnKey)
+
+	dataDir := filepath.Join(opts.Dir, "Data", "data")
+	if opts.Verify {
+		r.st, err = casc.OpenReadOnly(dataDir)
+	} else {
+		r.st, err = casc.Open(dataDir, filepath.Join(opts.Dir, ".everlake", "archives.json"))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("local storage: %w", err)
+	}
+	for _, b := range r.st.Bad() {
+		if opts.Verify {
+			r.problem(b, true)
+		} else {
+			opts.Log("a key table couldn't be read and is built again (a copy is in .everlake/bad-index): %s", b)
+		}
+	}
+	if err := r.moveStaged(); err != nil {
+		return nil, fmt.Errorf("moving staged files into local storage: %w", err)
+	}
 
 	idx, err := r.indexes(ctx)
 	if err != nil {
@@ -197,10 +239,19 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 			return nil, err
 		}
 	}
+	if opts.Verify {
+		r.checkBuildInfo()
+	}
 	r.rep.BytesDownloaded = r.downloaded.Load()
 	sort.Strings(r.rep.Bad)
 	sort.Strings(r.rep.Missing)
 	if !opts.Verify && !r.rep.Failed() {
+		if err := r.st.Flush(); err != nil {
+			return nil, fmt.Errorf("local storage: %w", err)
+		}
+		if err := r.writeBuildInfo(inst); err != nil {
+			return nil, err
+		}
 		if err := r.writeState(); err != nil {
 			return nil, err
 		}
@@ -315,11 +366,111 @@ func locate(idx []namedIndex, want map[tact.Key]*where) {
 	}
 }
 
+// --- .build.info --------------------------------------------------------------------------------------------------
+
+// writeBuildInfo writes .build.info, after a complete install. It names GameHosts (Blizzard's), not a mirror the
+// install may have used.
+func (r *run) writeBuildInfo(inst *tact.Install) error {
+	hosts := r.GameHosts
+	if len(hosts) == 0 {
+		hosts = r.CDN.Hosts
+	}
+	return writeFile(filepath.Join(r.Dir, ".build.info"), buildInfo(r.Pin, hosts, buildInfoTags(r.Tags, inst.Tags)),
+		0o644)
+}
+
+// checkBuildInfo reports .build.info if it's missing or names another build.
+func (r *run) checkBuildInfo() {
+	p := filepath.Join(r.Dir, ".build.info")
+	data, err := os.ReadFile(p)
+	row := "|" + r.Pin.BuildConfig + "|" + r.Pin.CDNConfig + "|"
+	if err != nil || !strings.Contains(string(data), row) || !strings.Contains(string(data), "|"+r.Pin.Version+"|") ||
+		!strings.HasSuffix(strings.TrimSpace(string(data)), "|"+r.Pin.Product) {
+		r.problem(p, err == nil)
+	}
+}
+
 // --- stored files ------------------------------------------------------------------------------------------------
 
-func (r *run) stagedPath(e tact.Key) string {
-	s := e.String()
-	return filepath.Join(r.Dir, ".everlake", "staged", s[:2], s)
+// storedName is how a stored file is named in reports.
+func (r *run) storedName(e tact.Key) string {
+	return filepath.Join(r.Dir, "Data", "data") + " " + e.String()
+}
+
+// store adds a checked file to local storage (not when verifying).
+func (r *run) store(e tact.Key, data []byte) error {
+	if r.Verify {
+		return nil
+	}
+	return r.st.Add(e, data)
+}
+
+// moveStaged moves the files an earlier launcher kept in .everlake/staged into local storage, so they aren't
+// fetched again, then removes that folder. Damaged ones are left out and fetched like any missing file.
+func (r *run) moveStaged() error {
+	root := filepath.Join(r.Dir, ".everlake", "staged")
+	if _, err := os.Stat(root); err != nil {
+		return nil
+	}
+	if r.Verify {
+		r.Log("note: %s holds files an earlier launcher fetched; install moves them into the game's storage", root)
+		return nil
+	}
+	// Staged files are removed in batches, once the storage holding them is flushed, so moving needs little extra
+	// disk space.
+	var moved int
+	var batch []string
+	var batchBytes int64
+	done := func() error {
+		if err := r.st.Flush(); err != nil {
+			return err
+		}
+		for _, p := range batch {
+			os.Remove(p)
+		}
+		batch, batchBytes = nil, 0
+		return nil
+	}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		e, err := tact.ParseKey(d.Name())
+		if err != nil {
+			return nil // a leftover temporary file
+		}
+		if have, err := r.st.Read(e); err == nil && tact.VerifyBLTE(have, e) == nil {
+			batch = append(batch, p)
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if tact.VerifyBLTE(data, e) != nil {
+			return nil // damaged: fetched again like any missing file
+		}
+		if err := r.st.Add(e, data); err != nil {
+			return err
+		}
+		moved++
+		batch = append(batch, p)
+		if batchBytes += int64(len(data)); batchBytes >= 256<<20 {
+			return done()
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := done(); err != nil {
+		return err
+	}
+	r.Log("moved %d files from %s into the game's storage", moved, root)
+	if err := os.RemoveAll(root); err != nil {
+		r.Log("note: couldn't remove %s (%v); its files are in the game's storage now, so it can be deleted", root, err)
+	}
+	return nil
 }
 
 // fetchStored gets one stored file from the CDN. check runs on each host's answer after the encoded-key check, so
@@ -346,22 +497,21 @@ func (r *run) fetchStored(ctx context.Context, e tact.Key, w *where, check func(
 	return data, err
 }
 
-// blob returns one of the build's own files (encoding file, manifests), checked against both keys: the staged copy
-// if it's intact, else from the CDN (staged again unless verifying, and reported when verifying).
+// blob returns one of the build's own files (encoding file, manifests), checked against both keys: the copy in
+// local storage if it's intact, else from the CDN (stored unless verifying, and reported when verifying).
 func (r *run) blob(ctx context.Context, e, c tact.Key, w *where) ([]byte, error) {
-	p := r.stagedPath(e)
-	data, err := os.ReadFile(p)
+	data, err := r.st.Read(e)
 	if err == nil && tact.VerifyBLTE(data, e) == nil {
 		return data, nil
 	}
 	if r.Verify {
-		r.problem(p, err == nil)
+		r.problem(r.storedName(e), !errors.Is(err, casc.ErrNotStored))
 	}
 	data, err = r.fetchStored(ctx, e, w, func(b []byte) error { _, err := tact.Decode(b, e, c); return err })
 	if err != nil {
 		return nil, err
 	}
-	return data, r.save(p, data, 0o644)
+	return data, r.store(e, data)
 }
 
 // --- loose files -------------------------------------------------------------------------------------------------
@@ -457,7 +607,7 @@ type span struct {
 	files   []tact.Key // with their places in want
 }
 
-// dataFiles stages (or checks) the download manifest's files for the wanted tags, plus the build's own files.
+// dataFiles stores (or checks) the download manifest's files for the wanted tags, plus the build's own files.
 func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download, system map[string][2]tact.Key) error {
 	entries, err := dl.Select(r.Tags)
 	if err != nil {
@@ -490,20 +640,20 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	r.Log("download manifest: %d of %d stored files match %s (plus the build's own files)",
 		len(order)-nsys, len(dl.Entries), strings.Join(r.Tags, " "))
 
-	// Keep what's already staged and intact.
+	// Keep what's already stored and intact.
 	var need []tact.Key
 	var mu sync.Mutex
 	err = r.parallel(ctx, len(order), func(ctx context.Context, i int) error {
 		e := order[i]
-		p := r.stagedPath(e)
-		data, err := os.ReadFile(p)
+		data, err := r.st.Read(e)
 		if err == nil && tact.VerifyBLTE(data, e) == nil {
 			r.count(&r.rep.DataKept)
 			return nil
 		}
 		if r.Verify {
-			if err == nil || !r.PartialData || isSystem[e] {
-				r.problem(p, err == nil)
+			listed := !errors.Is(err, casc.ErrNotStored)
+			if listed || !r.PartialData || isSystem[e] {
+				r.problem(r.storedName(e), listed)
 			}
 			return nil
 		}
@@ -575,7 +725,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	for _, e := range loose {
 		spans = append(spans, span{files: []tact.Key{e}})
 	}
-	r.Log("data: %d to fetch in %d requests, %d already staged", len(need), len(spans), r.rep.DataKept)
+	r.Log("data: %d to fetch in %d requests, %d already stored", len(need), len(spans), r.rep.DataKept)
 
 	return r.parallel(ctx, len(spans), func(ctx context.Context, i int) error {
 		s := spans[i]
@@ -589,7 +739,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 			if err != nil {
 				return err
 			}
-			if err := writeFile(r.stagedPath(e), data, 0o644); err != nil {
+			if err := r.st.Add(e, data); err != nil {
 				return err
 			}
 			r.count(&r.rep.DataFetched)
@@ -613,7 +763,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		}
 		r.downloaded.Add(int64(len(data)))
 		for _, e := range s.files {
-			if err := writeFile(r.stagedPath(e), part(data, e), 0o644); err != nil {
+			if err := r.st.Add(e, part(data, e)); err != nil {
 				return err
 			}
 			r.count(&r.rep.DataFetched)
@@ -681,29 +831,7 @@ func (r *run) save(p string, data []byte, mode os.FileMode) error {
 
 // writeFile writes through a temporary file and a rename, so a cut-off run never leaves a half file under the
 // real name.
-func writeFile(p string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".part-*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), mode); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), p)
-}
+func writeFile(p string, data []byte, mode os.FileMode) error { return casc.WriteFile(p, data, mode) }
 
 func (r *run) count(n *int) {
 	r.mu.Lock()
