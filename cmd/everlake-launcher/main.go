@@ -1,16 +1,20 @@
 // Command everlake-launcher installs and checks the pinned WoW Forever build from Blizzard's CDN.
 //
+// Started with no command (a double-click), it opens the launcher's window: Install / Verify / Play buttons and the
+// sign-in fields, for the install folder C:\Everlake (Windows) or ~/Everlake (macOS).
+//
 //	everlake-launcher install --dir <folder> [--tags OSX,arm64,enUS,US] [--no-data] [--max-priority N] [--data-limit-mb N]
 //	everlake-launcher verify  --dir <folder> [--tags ...]
 //	everlake-launcher show    [--tags ...]          the pinned build: tags and sizes, nothing written
 //	everlake-launcher pin     [--product wowf]      prints a pin for the build that is live now (to review, not to follow)
 //	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
 //	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows)
-//	everlake-launcher ui      --dir <folder>        a local page with Install / Verify / Play buttons
+//	everlake-launcher ui      [--dir <folder>] [--browser]   the launcher's window (or the same page in the browser)
 //	everlake-launcher mirror  --store <folder> [--prefetch]   Everlake's own CDN (runs on the server)
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,12 +25,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/appwindow"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
@@ -36,13 +42,28 @@ import (
 
 var version = "dev"
 
+// The window has to run on the main thread (Cocoa insists, and WebView2 wants one thread for its window), and only
+// the main goroutine can be pinned there: before main starts.
+func init() { runtime.LockOSThread() }
+
 func main() {
 	cdn.UserAgent = "everlake-launcher/" + version
-	if len(os.Args) < 2 {
-		usage()
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Finder used to add -psn_<number> when opening an app; it isn't a command.
+	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "-psn_") {
+		os.Args = os.Args[:1]
+	}
+	if len(os.Args) < 2 {
+		// A double-click: no terminal, so errors go in a message box.
+		if err := cmdApp(ctx); err != nil {
+			appwindow.Alert("Everlake launcher", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	attachConsole()
+	stdin = bufio.NewReader(os.Stdin)
 	var err error
 	switch os.Args[1] {
 	case "install":
@@ -73,7 +94,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage:
+	fmt.Fprint(os.Stderr, `usage (with no command it opens the launcher's window):
   everlake-launcher install --dir <folder> [--tags OSX,arm64,enUS,US] [--jobs 8]
                             [--no-data] [--max-priority N] [--data-limit-mb N]
   everlake-launcher verify  --dir <folder> [--quick]   (full hash check, or --quick: size and timestamps only)
@@ -81,7 +102,7 @@ func usage() {
   everlake-launcher pin     [--product wowf] [--region us]
   everlake-launcher start   --dir <folder> [-- game arguments]
   everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>] [--server-key <hex>] [--ca <file>]
-  everlake-launcher ui      --dir <folder> [--addr 127.0.0.1:PORT] [--no-open]
+  everlake-launcher ui      [--dir <folder>] [--browser | --no-open] [--addr 127.0.0.1:PORT]
   everlake-launcher mirror  --store <folder> [--overlay <folder>] [--addr :8087] [--prefetch | --prefetch-only]
                             [--tags OSX,Windows,x86_64,arm64,enUS,US] [--rate-mb 40] [--quiet]
 `)
@@ -424,11 +445,38 @@ func runInstall(ctx context.Context, opts install.Options, log func(string)) err
 	return nil
 }
 
+// defaultDir is the install folder the window uses when none is given: C:\Everlake on Windows (where the test builds
+// have always installed), ~/Everlake elsewhere.
+func defaultDir() string {
+	if runtime.GOOS == "windows" {
+		return `C:\Everlake`
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "Everlake")
+	}
+	return "Everlake"
+}
+
+// How the ui shows its page.
+type uiShow int
+
+const (
+	showWindow  uiShow = iota // the launcher's own window, else the browser
+	showBrowser               // the system browser
+	showNothing               // just serve (--no-open)
+)
+
+// cmdApp is what a double-click runs: the window for the default folder.
+func cmdApp(ctx context.Context) error {
+	return runUI(ctx, defaultDir(), "127.0.0.1:0", showWindow, true)
+}
+
 func cmdUI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
-	dir := fs.String("dir", "", "install folder (required)")
+	dir := fs.String("dir", defaultDir(), "install folder")
 	addr := fs.String("addr", "127.0.0.1:0", "address to listen on (loopback only)")
-	noOpen := fs.Bool("no-open", false, "don't open the browser")
+	browser := fs.Bool("browser", false, "show the page in the browser instead of the launcher's window")
+	noOpen := fs.Bool("no-open", false, "show nothing: just serve the page")
 	fs.Parse(args)
 	if *dir == "" {
 		return fmt.Errorf("ui: --dir is required")
@@ -436,31 +484,76 @@ func cmdUI(ctx context.Context, args []string) error {
 	if !strings.HasPrefix(*addr, "127.0.0.1:") && !strings.HasPrefix(*addr, "localhost:") && !strings.HasPrefix(*addr, "[::1]:") {
 		return fmt.Errorf("ui: --addr must be on the loopback address (127.0.0.1, localhost or [::1])")
 	}
-	srv := webui.New(*dir, pin.Default().Version, webui.Actions{
+	show := showWindow
+	if *browser {
+		show = showBrowser
+	}
+	if *noOpen {
+		show = showNothing
+	}
+	return runUI(ctx, *dir, *addr, show, false)
+}
+
+// runUI serves the launcher's page on the loopback address and shows it. In the window, closing it ends the
+// launcher (after any game it's still patching closes). In the browser, Ctrl-C ends it; or, started with no
+// terminal (detached), it ends a while after the last page closes.
+func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) error {
+	srv := webui.New(dir, pin.Default().Version, webui.Actions{
 		Install: func(ctx context.Context, log func(string)) error {
-			return runInstall(ctx, installOptions(ctx, *dir, false), log)
+			return runInstall(ctx, installOptions(ctx, dir, false), log)
 		},
 		Verify: func(ctx context.Context, log func(string)) error {
-			return runInstall(ctx, installOptions(ctx, *dir, true), log)
+			return runInstall(ctx, installOptions(ctx, dir, true), log)
 		},
-		Play:  uiPlay(*dir),
-		Realm: uiRealm(*dir),
+		Play:  uiPlay(dir),
+		Realm: uiRealm(dir),
 	})
-	ln, err := net.Listen("tcp", *addr)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	url := "http://" + ln.Addr().String() + "/"
+	hs := &http.Server{Handler: srv.Handler()}
+	served := make(chan error, 1)
+	go func() { served <- hs.Serve(ln) }()
+	defer hs.Close()
+
+	if show == showWindow {
+		err := appwindow.Run(appwindow.Options{Title: "Everlake launcher", URL: url, Stop: ctx.Done()})
+		if err == nil {
+			waitForGames(ctx)
+			return nil
+		}
+		logf("no app window (%v); showing the page in the browser instead", err)
+		show = showBrowser
+	}
 	logf("Everlake launcher page at %s  (Ctrl-C to stop)", url)
-	if !*noOpen {
+	if show == showBrowser {
 		openBrowser(url)
 	}
-	hs := &http.Server{Handler: srv.Handler()}
-	go func() { <-ctx.Done(); hs.Close() }()
-	if err := hs.Serve(ln); err != nil && err != http.ErrServerClosed {
-		return err
+	var idle <-chan time.Time
+	if detached {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		idle = t.C
 	}
-	return nil
+	for {
+		select {
+		case err := <-served:
+			if err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		case <-ctx.Done():
+			return nil
+		case <-idle:
+			// Nobody can press Ctrl-C on a launcher started without a terminal: it ends once its page has been
+			// closed for a while, nothing is running, and no game needs it.
+			if srv.Unwatched(2*time.Minute) && gamesRunning() == 0 {
+				return nil
+			}
+		}
+	}
 }
 
 // openBrowser points the system browser at url, best effort.

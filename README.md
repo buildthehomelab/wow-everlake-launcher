@@ -7,6 +7,27 @@ realm and starts the game.
 It never follows Blizzard's live build: the build is pinned in [`internal/pin/wowf.json`](internal/pin/wowf.json)
 and compiled in, so a launcher release always installs exactly the client the realm's server core supports.
 
+## Starting it
+
+**Double-click it.** The launcher opens as an app window with **Play**, **Install / update** and **Verify**, the
+sign-in fields, and its output live. There's no console window and no browser tab. It uses the install folder
+`C:\Everlake` on Windows and `~/Everlake` on macOS.
+
+![The launcher's window on macOS](docs/images/launcher-window-macos.png)
+
+| | File | |
+|---|---|---|
+| Windows | `everlake-launcher-windows-amd64.exe` | Double-click. Not signed yet: SmartScreen → *More info → Run anyway*. |
+| Windows | `everlake-launcher-cli-windows-amd64.exe` | The same program for typing commands in PowerShell (below). |
+| macOS | `Everlake-Launcher-macos.dmg` (or `.zip`) | Drag *Everlake Launcher* to Applications, double-click. Not notarised: the first time, macOS refuses; open it anyway from *System Settings → Privacy & Security → Open Anyway*. |
+
+The window shows the launcher's own page (the one `ui --browser` shows) in the system's web view: WebView2 on
+Windows (part of Windows 11, and of Windows 10 through Windows Update), WKWebView on macOS. A PC without WebView2
+gets the same page in its browser instead, and the launcher ends a couple of minutes after that page is closed.
+
+Closing the window ends the launcher, except while a game it joined to a realm is running: it then keeps going in the
+background, keeping the realm's key in the game, and ends when the game closes.
+
 ## Status
 
 Work in progress. What works today:
@@ -42,10 +63,21 @@ One binary per platform, no runtime to install:
   universal `.app` with its executable bit set — the same folder a Battle.net install has, so
   `everlake-client.sh` can point at it instead of needing Battle.net.
 
+`scripts/package.sh windows|macos [version]` builds the release files into `dist/`. The Windows exe is built with
+`-H=windowsgui` (a GUI program: a double-click opens no console) and needs no cgo, so it builds anywhere. The Mac app
+needs a Mac: its window uses Cocoa and WebKit through cgo, so it's built there for both architectures and joined into
+one universal binary in `Everlake Launcher.app`. A Mac build made elsewhere (without cgo) works but shows the page in
+the browser. CI builds both and keeps them as artifacts of each run.
+
 Pick the platform's files with `--tags` (default: this machine). The launcher installs any platform's client from
 any platform, so a Mac can prepare a Windows folder and the other way round.
 
-## Use
+## Commands
+
+Every command still works from a terminal. On Windows use `everlake-launcher-cli-windows-amd64.exe` for that: the
+window build prints into the terminal too, but as a GUI program the terminal doesn't wait for it (the prompt comes
+back straight away), and `play` can't ask for the password properly. On macOS the app's binary is
+`"/Applications/Everlake Launcher.app/Contents/MacOS/everlake-launcher"`.
 
 ```sh
 go build -o everlake-launcher ./cmd/everlake-launcher
@@ -57,14 +89,17 @@ go build -o everlake-launcher ./cmd/everlake-launcher
 ./everlake-launcher verify  --dir ~/Everlake --quick        # size + timestamps only, for every launch
 ./everlake-launcher pin                                     # what's live now, as a pin to review
 ./everlake-launcher start   --dir ~/Everlake                # starts the game the way Battle.net would (-uid wowf)
-./everlake-launcher ui      --dir ~/Everlake                # a local page with Install / Verify / Play buttons
+./everlake-launcher                                         # the window, for ~/Everlake (what a double-click does)
+./everlake-launcher ui      --dir ~/Everlake                # the window, for another folder
+./everlake-launcher ui      --dir ~/Everlake --browser      # the same page in the browser instead
 everlake-launcher.exe play --dir C:\Everlake --login-host login.realm.example.com --email you@example.com
 ```
 
-`ui` is the same jobs with buttons instead of typed commands: it opens a page in your browser (served only on your
-own machine, `127.0.0.1`) showing whether the client is intact, with **Install / update**, **Verify** and **Play**,
-and the launcher's output live. On Windows the page also has the sign-in fields: with a login server filled in,
-**Play** joins that realm like `play` does; left empty, it starts the game on its own like `start`.
+`ui` is the same jobs with buttons instead of typed commands: a page served only on your own machine (`127.0.0.1`)
+showing whether the client is intact, with **Install / update**, **Verify** and **Play**, and the launcher's output
+live, in the launcher's window (`--browser`: in your browser; `--no-open`: just served). On Windows the page also has
+the sign-in fields: with a login server filled in, **Play** joins that realm like `play` does; left empty, it starts
+the game on its own like `start`.
 
 `--tags` picks platform, architecture, locale and region (default: this machine, `enUS`, `US`). The region matters:
 the Mac game binary for CN differs from everyone else's. `--max-priority` and `--data-limit-mb` cut the data stage
@@ -139,6 +174,7 @@ without being decrypted.
 ```sh
 go test ./...                                   # format parsers + a whole install against a fake CDN
                                                 # (on Windows also: both game patches on a stand-in game process)
+EVERLAKE_WINDOW_TEST=1 go test -run Window ./internal/appwindow   # Windows: opens a real WebView2 window
 EVERLAKE_LIVE=1 go test -run Live ./internal/tact     # reads the real pinned build from Blizzard's CDN (~2 MB)
 EVERLAKE_LIVE=full go test -run Live ./internal/tact  # also the encoding file (~135 MB)
 ```

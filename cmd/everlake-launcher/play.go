@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/gamepatch"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
@@ -16,8 +18,9 @@ import (
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/webui"
 )
 
-// stdin is shared by the email and password prompts, so neither loses what the other buffered.
-var stdin = bufio.NewReader(os.Stdin)
+// stdin is shared by the email and password prompts, so neither loses what the other buffered. main sets it once
+// the Windows GUI build has borrowed its terminal's handles.
+var stdin *bufio.Reader
 
 // cmdPlay signs in to a realm's login server, hands the game the login, and starts it with the patches it needs to
 // talk to that realm. It stays until the game closes, keeping the server key in place.
@@ -152,8 +155,50 @@ func uiPlay(dir string) func(ctx context.Context, in webui.PlayInput, log func(s
 		s = s.ForHost(strings.TrimSpace(in.LoginHost))
 		s.Email = strings.TrimSpace(in.Email)
 		// The game outlives the job; its patches keep logging to the page and stop when it closes.
-		_, err = joinRealm(context.Background(), dir, s, in.Password, log)
-		return err
+		game, err := joinRealm(context.Background(), dir, s, in.Password, log)
+		if err != nil {
+			return err
+		}
+		trackGame(game)
+		log("the launcher keeps the realm's key in the game until it closes; closing this window is fine, the " +
+			"launcher keeps running in the background until then")
+		return nil
+	}
+}
+
+// The games the ui joined to a realm and is still patching. Closing the window doesn't end the launcher while one
+// runs: the realm's key has to stay in the game.
+var (
+	gamesMu sync.Mutex
+	games   = map[*gamepatch.Game]bool{}
+)
+
+func trackGame(g *gamepatch.Game) {
+	gamesMu.Lock()
+	games[g] = true
+	gamesMu.Unlock()
+	go func() {
+		<-g.Done
+		gamesMu.Lock()
+		delete(games, g)
+		gamesMu.Unlock()
+	}()
+}
+
+func gamesRunning() int {
+	gamesMu.Lock()
+	defer gamesMu.Unlock()
+	return len(games)
+}
+
+// waitForGames returns once every tracked game has closed (or ctx ends).
+func waitForGames(ctx context.Context) {
+	for gamesRunning() > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
 	}
 }
 

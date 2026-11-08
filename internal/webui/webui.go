@@ -54,14 +54,27 @@ type Server struct {
 	mu   sync.Mutex
 	busy string // the running job's name, or ""
 
-	submu   sync.Mutex
-	subs    map[chan string]struct{}
-	history []string // recent lines, replayed to a page that opens mid-job
+	submu    sync.Mutex
+	subs     map[chan string]struct{}
+	history  []string  // recent lines, replayed to a page that opens mid-job
+	lastSeen time.Time // when the last page stopped listening (or the server started)
 }
 
 // New makes a server for one install folder.
 func New(dir, version string, act Actions) *Server {
-	return &Server{dir: dir, version: version, act: act, subs: map[chan string]struct{}{}}
+	return &Server{dir: dir, version: version, act: act, subs: map[chan string]struct{}{}, lastSeen: time.Now()}
+}
+
+// Unwatched reports whether no page has been open for at least d and no job is running: a launcher shown in the
+// browser, with no terminal to stop it from, ends then. A page holds its log stream open while it's showing and
+// reconnects within seconds when it drops.
+func (s *Server) Unwatched(d time.Duration) bool {
+	s.mu.Lock()
+	busy := s.busy != ""
+	s.mu.Unlock()
+	s.submu.Lock()
+	defer s.submu.Unlock()
+	return !busy && len(s.subs) == 0 && time.Since(s.lastSeen) >= d
 }
 
 // Handler is the server's routes.
@@ -229,6 +242,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		s.submu.Lock()
 		delete(s.subs, ch)
+		s.lastSeen = time.Now()
 		s.submu.Unlock()
 	}()
 

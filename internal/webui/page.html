@@ -28,7 +28,8 @@
   label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
   input { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px;
           padding:8px 10px; min-width:0; }
-  pre { background:#0b0d10; color:#d6deeb; border-radius:8px; padding:12px; height:300px; overflow:auto; margin:0;
+  pre { background:#0b0d10; color:#d6deeb; border-radius:8px; padding:12px; overflow:auto; margin:0;
+        height:clamp(160px, calc(100vh - 545px), 600px); /* fills the launcher's window without scrolling it */
         font:12px/1.5 ui-monospace, monospace; white-space:pre-wrap; word-break:break-word; }
   @media (prefers-color-scheme: light) { pre { background:#0d1117; } }
 </style>

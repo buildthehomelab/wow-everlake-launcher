@@ -28,9 +28,59 @@ jobs:
       - name: build for the supported platforms
         if: runner.os == 'Linux'
         run: |
+          # Without cgo a Mac build has no window and shows the page in the browser; the macos job builds the app.
           GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/everlake-launcher
           GOOS=darwin GOARCH=amd64 go build -o /dev/null ./cmd/everlake-launcher
-          GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/everlake-launcher
+          scripts/package.sh windows "ci-${GITHUB_SHA::7}" dist
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: everlake-launcher-windows
+          path: dist/*.exe
       - name: build the mirror container
         if: runner.os == 'Linux'
         run: docker build -t everlake-mirror . && docker run --rm everlake-mirror version
+      - name: the window build runs commands from a terminal
+        if: runner.os == 'Windows'
+        run: |
+          go build -ldflags "-H=windowsgui -X main.version=gui-ok" -o el.exe ./cmd/everlake-launcher
+          # Output redirected to a file: the handles it's given are used, and the caller can wait for it.
+          $p = Start-Process -FilePath ./el.exe -ArgumentList version -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          $v = "$(Get-Content out.txt -Raw)".Trim()
+          Write-Host "exit $($p.ExitCode), stdout '$v', stderr '$(Get-Content err.txt -Raw)'"
+          if ($p.ExitCode -ne 0 -or $v -ne 'gui-ok') { exit 1 }
+          # For the record (not checked): what PowerShell does with a GUI program's output by itself.
+          $plain = ./el.exe version
+          Write-Host "plain call captured '$plain'"
+      - name: the window opens and loads a page (WebView2)
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        env:
+          EVERLAKE_WINDOW_TEST: '1'
+        run: go test -v -run TestWindowLoadsPage ./internal/appwindow
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - name: build the app (both Mac targets, with the window)
+        run: scripts/package.sh macos "ci-${GITHUB_SHA::7}" dist
+      - name: check the app
+        run: |
+          ditto -x -k dist/Everlake-Launcher-macos.zip out
+          bin="out/Everlake Launcher.app/Contents/MacOS/everlake-launcher"
+          lipo -info "$bin" | grep -q 'x86_64 arm64'
+          "$bin" version
+          codesign --verify --strict "out/Everlake Launcher.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: everlake-launcher-macos
+          path: |
+            dist/*.zip
+            dist/*.dmg
