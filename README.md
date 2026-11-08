@@ -24,6 +24,11 @@ Work in progress. What works today:
   storage (`Data/data`) — the full `verify` does that.
 - A run that's stopped or killed resumes: the key tables are saved every 30 seconds, and a half-written archive
   with nothing pointing into it is removed.
+- **Updating to a new pinned build** is the same `install`: it keeps every file whose key didn't change, fetches
+  only the new ones, and once the new build is fully in place removes the old build's files and data (reclaiming the
+  space). Nothing is removed until the update has succeeded. The game's own storage and anything it added are left
+  alone. A trial install (`--no-data`, `--max-priority`, `--data-limit-mb`) never prunes data, so it can't delete
+  what a fuller install fetched.
 - **Not yet:** connecting to our realm (login, the server key). `install` and `start` get the stock client running;
   joining an Everlake realm is done elsewhere (on macOS, `wow-project-everlake`'s `everlake-client.sh`).
 

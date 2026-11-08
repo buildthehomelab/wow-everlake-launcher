@@ -488,3 +488,77 @@ func TestArchiveTakenByOthers(t *testing.T) {
 		t.Error("the other archive was removed")
 	}
 }
+
+func TestPrune(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	own := filepath.Join(dir, "own.json")
+
+	// A file the client wrote (its own archive + index), which Prune must never touch.
+	blob, ce := tacttest.Plain([]byte("client file kept forever"))
+	arch := append(entryHeader(ce, uint32(headerLen+len(blob)), 0), blob...)
+	ck := short(ce)
+	cb := Bucket(ck)
+	clientStorage(t, data, map[int][]entry{cb: {{ck, Loc{Size: uint32(len(arch))}}}})
+	os.WriteFile(filepath.Join(data, "data.000"), arch, 0o644)
+
+	s, err := Open(data, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.limit = 4096 // several of our own archives
+	blobs, order := files(60)
+	for _, e := range order {
+		if err := s.Add(e, blobs[e]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+
+	s, _ = Open(data, own)
+	keep := map[tact.Key]bool{ce: true} // keep the client file and the first half of ours
+	for _, e := range order[:30] {
+		keep[e] = true
+	}
+	entries, archives, reclaimed, err := s.Prune(keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries != 30 {
+		t.Errorf("pruned %d entries, want 30", entries)
+	}
+	if archives == 0 || reclaimed == 0 {
+		t.Errorf("freed %d archives, %d bytes", archives, reclaimed)
+	}
+	s.Close()
+
+	s, _ = Open(data, own)
+	defer s.Close()
+	if s.Len() != 31 { // 30 kept + the client file
+		t.Errorf("%d entries left, want 31", s.Len())
+	}
+	for _, e := range order[:30] {
+		if got, err := s.Read(e); err != nil || tact.VerifyBLTE(got, e) != nil {
+			t.Errorf("kept file %s: %v", e, err)
+		}
+	}
+	for _, e := range order[30:] {
+		if _, err := s.Read(e); err != ErrNotStored {
+			t.Errorf("pruned file %s still here: %v", e, err)
+		}
+	}
+	if got, err := s.Read(ce); err != nil || !bytes.Equal(got, blob) {
+		t.Errorf("client file pruned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "data.000")); err != nil {
+		t.Errorf("client archive removed: %v", err)
+	}
+	// Pruning with everything kept frees nothing.
+	all := map[tact.Key]bool{ce: true}
+	for _, e := range order[:30] {
+		all[e] = true
+	}
+	if n, _, _, _ := s.Prune(all); n != 0 {
+		t.Errorf("a no-op prune removed %d entries", n)
+	}
+}

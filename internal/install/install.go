@@ -67,6 +67,8 @@ type Report struct {
 	DataFiles, DataKept, DataFetched       int
 	DataSkippedByLimit                     int
 	BytesDownloaded                        int64
+	PrunedFiles, PrunedData                int   // old-build files and data entries removed on an update
+	Reclaimed                              int64 // bytes freed by removing old-build archives
 	Bad, Missing                           []string
 	Version, BuildConfig, CDNConfig, Where string
 }
@@ -79,13 +81,32 @@ var ErrNoInstall = errors.New("no finished Everlake install in this folder (.eve
 
 type run struct {
 	Options
-	rep        Report
-	mu         sync.Mutex
-	reported   map[string]bool
-	downloaded atomic.Int64
-	build, cdc tact.Config
-	enc        *tact.Encoding
-	st         *casc.Storage // the game's local storage, Data/data
+	rep         Report
+	mu          sync.Mutex
+	reported    map[string]bool
+	downloaded  atomic.Int64
+	build, cdc  tact.Config
+	enc         *tact.Encoding
+	st          *casc.Storage   // the game's local storage, Data/data
+	prev        *State          // the install already in the folder, if any (to detect an update and prune)
+	dataKeep    []tact.Key      // every stored key this install wants (for pruning the rest on an update)
+	clientFiles map[string]bool // relative paths of the client files this install is responsible for
+}
+
+// owns records a client file (config, index, loose file, .build.info, .flavor.info) this install is responsible
+// for, by its path relative to the install folder. On an update, a file the previous install recorded that this
+// one doesn't own is from the old build and is pruned.
+func (r *run) owns(abs string) {
+	rel, err := filepath.Rel(r.Dir, abs)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	if r.clientFiles == nil {
+		r.clientFiles = map[string]bool{}
+	}
+	r.clientFiles[filepath.ToSlash(rel)] = true
+	r.mu.Unlock()
 }
 
 // Run installs (or with Verify, checks) the pinned build in opts.Dir.
@@ -136,6 +157,12 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 		return nil, fmt.Errorf("build config is for product %q, the pin says %q", name, opts.Pin.Product)
 	}
 	opts.Log("build %s (%s), CDN config %s", opts.Pin.Version, r.build.One("build-name"), cdnKey)
+	if !opts.Verify {
+		r.prev, _ = ReadState(opts.Dir)
+		if r.prev != nil && r.prev.Pin.BuildConfig != opts.Pin.BuildConfig {
+			opts.Log("updating Forever %s → %s (old-build files are removed after)", r.prev.Pin.Version, opts.Pin.Version)
+		}
+	}
 
 	dataDir := filepath.Join(opts.Dir, "Data", "data")
 	if opts.Verify {
@@ -256,11 +283,56 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 		if err := r.writeFlavorInfo(); err != nil {
 			return nil, err
 		}
+		if err := r.prune(); err != nil { // before writeState, so the recorded fingerprints exclude pruned files
+			return nil, err
+		}
 		if err := r.writeState(); err != nil {
 			return nil, err
 		}
 	}
 	return &r.rep, nil
+}
+
+// prune removes what an earlier install of a different build left behind: client files the new build no longer
+// lists, and (on a full data install) its stored data. It needs a previous install to compare against, and runs
+// after the new build is fully in place, so nothing is removed until the update has succeeded.
+func (r *run) prune() error {
+	if r.prev == nil {
+		return nil
+	}
+	// Client files (loose files, configs, indexes, .build.info, .flavor.info): whatever the previous install
+	// recorded and this one isn't responsible for is from the old build. Only the installer-written files are
+	// recorded (fingerprintOwned), so the game's own WTF, logs, screenshots and the player's add-ons — which live in
+	// the same game folder — are never in this list and never removed.
+	for _, f := range r.prev.Files {
+		if r.clientFiles[f.Path] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(r.Dir, filepath.FromSlash(f.Path))); err == nil {
+			r.rep.PrunedFiles++
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	// Stored data: only on a full data install (not --no-data, --max-priority or --data-limit-mb), where dataKeep
+	// is the complete set the build wants. A limited run would otherwise delete data a fuller install had fetched.
+	var archives int
+	if !r.NoData && r.MaxPriority == nil && r.DataLimit == 0 && r.dataKeep != nil {
+		keep := make(map[tact.Key]bool, len(r.dataKeep))
+		for _, k := range r.dataKeep {
+			keep[k] = true
+		}
+		entries, a, reclaimed, err := r.st.Prune(keep)
+		if err != nil {
+			return fmt.Errorf("pruning old data: %w", err)
+		}
+		r.rep.PrunedData, archives, r.rep.Reclaimed = entries, a, reclaimed
+	}
+	if r.rep.PrunedFiles > 0 || r.rep.PrunedData > 0 {
+		r.Log("pruned %d old files and %d old data entries (%d archives, %.1f MB reclaimed)", r.rep.PrunedFiles,
+			r.rep.PrunedData, archives, float64(r.rep.Reclaimed)/(1<<20))
+	}
+	return nil
 }
 
 // --- configs and indexes -----------------------------------------------------------------------------------------
@@ -273,6 +345,7 @@ func (r *run) configPath(k tact.Key) string {
 // config reads a config from disk if it's there and intact, else from the CDN. Its name is its MD5.
 func (r *run) config(ctx context.Context, k tact.Key) (tact.Config, error) {
 	p := r.configPath(k)
+	r.owns(p)
 	data, err := os.ReadFile(p)
 	if err == nil && tact.KeyOf(data) == k {
 		return tact.ParseConfig(string(data)), nil
@@ -316,6 +389,7 @@ func (r *run) indexes(ctx context.Context) ([]namedIndex, error) {
 	err = r.parallel(ctx, len(keys), func(ctx context.Context, i int) error {
 		k := keys[i]
 		p := filepath.Join(r.Dir, "Data", "indices", k.String()+".index")
+		r.owns(p)
 		data, err := os.ReadFile(p)
 		if err == nil {
 			if idx, err := tact.ParseIndex(k, data); err == nil {
@@ -374,7 +448,9 @@ func locate(idx []namedIndex, want map[tact.Key]*where) {
 
 // writeFlavorInfo writes <game folder>/.flavor.info.
 func (r *run) writeFlavorInfo() error {
-	return writeFile(filepath.Join(r.Dir, r.Pin.GameFolder, ".flavor.info"), flavorInfo(r.Pin), 0o644)
+	p := filepath.Join(r.Dir, r.Pin.GameFolder, ".flavor.info")
+	r.owns(p)
+	return writeFile(p, flavorInfo(r.Pin), 0o644)
 }
 
 // writeBuildInfo writes .build.info, after a complete install. It names GameHosts (Blizzard's), not a mirror the
@@ -384,6 +460,7 @@ func (r *run) writeBuildInfo(inst *tact.Install) error {
 	if len(hosts) == 0 {
 		hosts = r.CDN.Hosts
 	}
+	r.owns(filepath.Join(r.Dir, ".build.info"))
 	return writeFile(filepath.Join(r.Dir, ".build.info"), buildInfo(r.Pin, hosts, buildInfoTags(r.Tags, inst.Tags)),
 		0o644)
 }
@@ -561,7 +638,9 @@ func (r *run) looseFiles(ctx context.Context, idx []namedIndex, inst *tact.Insta
 		if !ok {
 			return fmt.Errorf("install manifest file %s (%s) is not in the encoding file", e.Name, e.CKey)
 		}
-		jobs = append(jobs, job{e, ent.EKeys[0], filepath.Join(r.Dir, r.Pin.GameFolder, rel)})
+		path := filepath.Join(r.Dir, r.Pin.GameFolder, rel)
+		r.owns(path)
+		jobs = append(jobs, job{e, ent.EKeys[0], path})
 		want[ent.EKeys[0]] = nil
 	}
 	locate(idx, want)
@@ -649,6 +728,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		manifestSize[e.EKey] = int64(e.Size)
 	}
 	locate(idx, want)
+	r.dataKeep = order
 	r.rep.DataFiles = len(order)
 	r.Log("download manifest: %d of %d stored files match %s (plus the build's own files)",
 		len(order)-nsys, len(dl.Entries), strings.Join(r.Tags, " "))
@@ -954,7 +1034,7 @@ func (r *run) writeState() error {
 	if r.rep.DataSkippedByLimit > 0 {
 		s.DataLimit = r.DataLimit
 	}
-	files, err := fingerprint(r.Dir, r.Pin.GameFolder)
+	files, err := r.fingerprintOwned()
 	if err != nil {
 		return err
 	}
@@ -966,42 +1046,27 @@ func (r *run) writeState() error {
 	return writeFile(filepath.Join(r.Dir, ".everlake", "install.json"), append(data, '\n'), 0o644)
 }
 
-// fingerprint records the size and modification time of the client files the launcher owns: everything under
-// Data/config, Data/indices and the game folder (the loose files and .flavor.info), plus .build.info. The game's
-// own storage (Data/data) and the launcher's own records (.everlake) are left out. It is called right after an
-// install writes those files, so the times it records are the install's.
-func fingerprint(dir, gameFolder string) ([]FileFP, error) {
-	var out []FileFP
-	roots := []string{filepath.Join(dir, "Data", "config"), filepath.Join(dir, "Data", "indices"),
-		filepath.Join(dir, gameFolder)}
-	for _, root := range roots {
-		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) && p == root {
-					return nil
-				}
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(dir, p)
-			if err != nil {
-				return err
-			}
-			out = append(out, FileFP{Path: filepath.ToSlash(rel), Size: info.Size(), ModNS: info.ModTime().UnixNano()})
-			return nil
-		})
+// fingerprintOwned records the size and modification time of exactly the files this install wrote (the owned set:
+// the loose files, configs, indexes, .build.info, .flavor.info). It must not walk the game folder: the game writes
+// its own WTF settings, logs, screenshots and the player's add-ons there, and those must never be fingerprinted —
+// the quick check would flag the player's own changes, and the update prune would delete them.
+func (r *run) fingerprintOwned() ([]FileFP, error) {
+	r.mu.Lock()
+	paths := make([]string, 0, len(r.clientFiles))
+	for p := range r.clientFiles {
+		paths = append(paths, p)
+	}
+	r.mu.Unlock()
+	out := make([]FileFP, 0, len(paths))
+	for _, rel := range paths {
+		info, err := os.Stat(filepath.Join(r.Dir, filepath.FromSlash(rel)))
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, err
 		}
-	}
-	if info, err := os.Stat(filepath.Join(dir, ".build.info")); err == nil {
-		out = append(out, FileFP{Path: ".build.info", Size: info.Size(), ModNS: info.ModTime().UnixNano()})
+		out = append(out, FileFP{Path: rel, Size: info.Size(), ModNS: info.ModTime().UnixNano()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil

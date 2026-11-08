@@ -466,6 +466,69 @@ func (s *Storage) flush() error {
 	return nil
 }
 
+// Prune drops the entries this package made whose encoded key isn't in keep, and deletes any of its own archives
+// that no entry points at any more, reclaiming their space. Entries and archives the game itself wrote are never
+// touched (only the archives recorded in archives.json are this package's). It is how an update to a new build
+// removes the old build's data. keep holds full encoded keys; an index entry keeps only the first 9 bytes, so a
+// key whose 9 bytes collide with a kept one is kept too — safe, since the worst case is keeping an extra file.
+func (s *Storage) Prune(keep map[tact.Key]bool) (entries, archives int, reclaimed int64, err error) {
+	if s.readOnly {
+		return 0, 0, 0, errors.New("local storage is open read-only")
+	}
+	keepShort := make(map[ShortKey]bool, len(keep))
+	for k := range keep {
+		keepShort[short(k)] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	own := map[int]bool{}
+	for _, n := range s.own {
+		own[n] = true
+	}
+	for _, bf := range s.buckets {
+		for k, loc := range bf.entries {
+			if !keepShort[k] && own[loc.Archive] {
+				delete(bf.entries, k)
+				bf.dirty = true
+				entries++
+			}
+		}
+	}
+	if entries == 0 {
+		return 0, 0, 0, nil
+	}
+	used := map[int]bool{}
+	for _, bf := range s.buckets {
+		for _, loc := range bf.entries {
+			used[loc.Archive] = true
+		}
+	}
+	var keepOwn []int
+	for _, n := range s.own {
+		if used[n] || (s.w != nil && n == s.wNum) { // never delete the archive currently being written
+			keepOwn = append(keepOwn, n)
+			continue
+		}
+		if f := s.readers[n]; f != nil { // Windows can't delete a file it still has open
+			f.Close()
+			delete(s.readers, n)
+		}
+		if fi, e := os.Stat(s.archivePath(n)); e == nil {
+			reclaimed += fi.Size()
+		}
+		if e := os.Remove(s.archivePath(n)); e != nil && !os.IsNotExist(e) {
+			return entries, archives, reclaimed, e
+		}
+		delete(s.archives, n)
+		archives++
+	}
+	s.own = keepOwn
+	if e := s.writeOwn(); e != nil {
+		return entries, archives, reclaimed, e
+	}
+	return entries, archives, reclaimed, s.flush()
+}
+
 // Close flushes and closes every file.
 func (s *Storage) Close() error {
 	s.mu.Lock()
