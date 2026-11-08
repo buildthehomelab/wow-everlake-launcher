@@ -180,6 +180,13 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 			opts.Log("a key table couldn't be read and is built again (a copy is in .everlake/bad-index): %s", b)
 		}
 	}
+	for _, b := range r.st.Mended() {
+		if opts.Verify {
+			r.problem(b, true)
+		} else {
+			opts.Log("a key table's update area is damaged and is written again (a copy is in .everlake/bad-index): %s", b)
+		}
+	}
 	if err := r.moveStaged(); err != nil {
 		return nil, fmt.Errorf("moving staged files into local storage: %w", err)
 	}
@@ -1089,8 +1096,8 @@ func Start(dir string, extra ...string) (int, error) {
 
 // QuickVerify checks the fingerprinted client files by size and modification time only, without reading or hashing
 // their bytes or asking the CDN. It is the fast check for every launch; a full verify is the thorough one. It never
-// writes. The game's storage (Data/data) is not covered, so a clean quick check doesn't prove the game data is
-// complete, only that the client files are as the install left them.
+// writes. Of the game's storage (Data/data) only the key tables are read, not the stored files, so a clean quick
+// check doesn't prove the game data is complete, only that the client files are as the install left them.
 func QuickVerify(dir string) (*Report, error) {
 	st, err := ReadState(dir)
 	if err != nil {
@@ -1111,6 +1118,12 @@ func QuickVerify(dir string) (*Report, error) {
 		case info.Size() != f.Size || info.ModTime().UnixNano() != f.ModNS:
 			rep.Bad = append(rep.Bad, p)
 		}
+	}
+	// The key tables are small and the client refuses to start when one is damaged, so they're read here too.
+	if s, err := casc.OpenReadOnly(filepath.Join(dir, "Data", "data")); err == nil {
+		rep.Bad = append(rep.Bad, s.Bad()...)
+		rep.Bad = append(rep.Bad, s.Mended()...)
+		s.Close()
 	}
 	sort.Strings(rep.Bad)
 	sort.Strings(rep.Missing)

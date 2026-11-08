@@ -96,6 +96,7 @@ type Storage struct {
 	own      []int        // archives this package made (recorded in ownPath)
 	readers  map[int]*os.File
 	bad      []string // key tables that couldn't be read
+	mended   []string // key tables whose update area had broken entries (rewritten on the next flush)
 
 	w         *os.File // the archive being written, or nil
 	wNum      int
@@ -179,6 +180,18 @@ func open(dir, ownPath string, readOnly bool) (*Storage, error) {
 			continue
 		}
 		bf.orig = data
+		if _, bad := updateSlots(data); bad > 0 {
+			// The update area holds entries that fail their hash: the client then calls the whole storage damaged
+			// ("Corruption detected in KMT file (invalid update hash)"). Launchers up to v0.1.0-alpha.5 left it so
+			// after the sorted block changed size. Rewriting keeps the good entries and drops the rest.
+			s.mended = append(s.mended, fmt.Sprintf("%s (%d update entries fail their hash)", p, bad))
+			if !readOnly {
+				if err := s.keepBad(bf.name, data); err != nil {
+					return nil, err
+				}
+				bf.dirty = true
+			}
+		}
 		for _, e := range entries {
 			bf.entries[e.key] = e.loc
 			s.archives[e.loc.Archive] = true
@@ -227,6 +240,10 @@ func (s *Storage) keepBad(name string, data []byte) error {
 
 // Bad lists the key tables that couldn't be read, with why.
 func (s *Storage) Bad() []string { return append([]string(nil), s.bad...) }
+
+// Mended lists the key tables whose update area held entries that fail their hash, with how many. The client refuses
+// to start on such a table; a writable storage rewrites it without them on the next flush (Flush, Add or Close).
+func (s *Storage) Mended() []string { return append([]string(nil), s.mended...) }
 
 func (s *Storage) archivePath(n int) string { return filepath.Join(s.dir, fmt.Sprintf("data.%03d", n)) }
 
@@ -598,10 +615,54 @@ func parseIndex(data []byte, bucket int) ([]entry, error) {
 	return out, nil
 }
 
-// buildIndex writes a version 7 index file with one sorted entry block. Rewriting an existing file (orig) keeps its
-// header bytes and whatever follows the entries, and its size when the entries fit, as casc_local.py does: the
-// block's size field says where the entries end, as in the files the client writes itself. A new file gets
-// Blizzard's header values and at least 64 KiB of spare room, in 64 KiB steps.
+// The update area. After the sorted block the client keeps the entries it adds while it runs (the files it
+// streams): 0x200-byte pages from the first 4 KiB boundary after the block, each holding 21 slots of 24 bytes (a
+// 32-bit hash with the top bit set, the 18-byte entry, a status byte the hash covers, one spare byte). A slot whose
+// hash is zero is empty. The client checks every slot's hash and calls the storage damaged when one fails, so the
+// area must move with the block when the block changes size (CascLib's LoadIndexFile_V2 reads the same pages).
+const (
+	updateAlign = 0x1000
+	updatePage  = 0x200
+	updateSlot  = 24
+	updateLen   = 0x7800 // the room a Blizzard-written key table leaves for it
+	slotsInPage = updatePage / updateSlot
+)
+
+// sortedEnd is where the sorted block of a well-formed key table ends.
+func sortedEnd(data []byte) int {
+	return blockAt + 8 + int(binary.LittleEndian.Uint32(data[blockAt:]))
+}
+
+// updateSlots returns the update area's good slots in file order, and how many non-empty slots fail their hash. It
+// reads every slot of every page from the 4 KiB boundary after the sorted block to the end of the file, so it also
+// finds an area that an older launcher left further on, behind entries of an earlier, longer block.
+func updateSlots(data []byte) (slots [][]byte, bad int) {
+	if len(data) < blockAt+8 {
+		return nil, 0
+	}
+	start := (sortedEnd(data) + updateAlign - 1) &^ (updateAlign - 1)
+	for page := start; page+updatePage <= len(data); page += updatePage {
+		for i := 0; i < slotsInPage; i++ {
+			at := page + i*updateSlot
+			h := binary.LittleEndian.Uint32(data[at:])
+			if h == 0 {
+				continue
+			}
+			if hashlittle(data[at+4:at+4+entryLen+1], 0)|0x80000000 != h {
+				bad++
+				continue
+			}
+			slots = append(slots, append([]byte(nil), data[at:at+updateSlot]...))
+		}
+	}
+	return slots, bad
+}
+
+// buildIndex writes a version 7 index file: the sorted entry block, then the update area at the first 4 KiB
+// boundary after it. Rewriting an existing file (orig) keeps its header bytes and the good entries of its update
+// area, in their order, packed from the area's new start; slots that fail their hash and any other bytes after the
+// block are dropped. The file keeps at least its old size. A new file gets Blizzard's header values. Either way the
+// file has room for at least updateLen bytes of update area, rounded up to 64 KiB.
 func buildIndex(bucket int, entries []entry, orig []byte) []byte {
 	raw := make([][]byte, len(entries))
 	for i, e := range entries {
@@ -615,19 +676,28 @@ func buildIndex(bucket int, entries []entry, orig []byte) []byte {
 	}
 	sort.Slice(raw, func(i, j int) bool { return bytes.Compare(raw[i], raw[j]) < 0 })
 	used := blockAt + 8 + len(raw)*entryLen
+	var slots [][]byte
+	if orig != nil {
+		slots, _ = updateSlots(orig)
+	}
+	start := (used + updateAlign - 1) &^ (updateAlign - 1)
+	area := (len(slots) + slotsInPage - 1) / slotsInPage * updatePage
+	if area < updateLen {
+		area = updateLen
+	}
+	size := (start + area + 0xffff) &^ 0xffff
 	var out []byte
 	if orig != nil {
-		size := len(orig)
-		if used > size {
-			size = (used + 0x10000 + 0xffff) &^ 0xffff
+		if size < len(orig) {
+			size = len(orig)
 		}
 		out = make([]byte, size)
 		copy(out, orig[:blockAt])
-		if used < len(orig) {
-			copy(out[used:], orig[used:])
+		for i, sl := range slots {
+			copy(out[start+i/slotsInPage*updatePage+i%slotsInPage*updateSlot:], sl)
 		}
 	} else {
-		out = make([]byte, (used+0x10000+0xffff)&^0xffff)
+		out = make([]byte, size)
 		h := out[8:24]
 		binary.LittleEndian.PutUint16(h, 7)
 		h[2], h[3], h[4], h[5], h[6], h[7] = byte(bucket), 0, 4, 5, keyLen, segmentBits
