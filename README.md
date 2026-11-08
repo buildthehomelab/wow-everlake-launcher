@@ -21,8 +21,20 @@ Work in progress. What works today:
   damaged or missing; `install` again repairs exactly those.
 - A run that's stopped or killed resumes: the key tables are saved every 30 seconds, and a half-written archive
   with nothing pointing into it is removed.
-- **Not yet:** starting the game on our realm (login, the server key patch). Whether the game starts from this
-  folder at all is the next test.
+- **Not yet:** connecting to our realm (login, the server key). `install` and `start` get the stock client running;
+  joining an Everlake realm is done elsewhere (on macOS, `wow-project-everlake`'s `everlake-client.sh`).
+
+## Platforms
+
+One binary per platform, no runtime to install:
+
+- **Windows** (`GOOS=windows GOARCH=amd64`): installs into `<dir>\_forever_\Wow.exe`.
+- **macOS** (`GOOS=darwin`, `arm64` and `amd64`): installs `<dir>/_forever_/World of Warcraft.app`, a proper
+  universal `.app` with its executable bit set — the same folder a Battle.net install has, so
+  `everlake-client.sh` can point at it instead of needing Battle.net.
+
+Pick the platform's files with `--tags` (default: this machine). The launcher installs any platform's client from
+any platform, so a Mac can prepare a Windows folder and the other way round.
 
 ## Use
 
