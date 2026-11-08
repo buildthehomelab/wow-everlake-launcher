@@ -69,7 +69,7 @@ and the launcher's output live. On Windows the page also has the sign-in fields:
 `--tags` picks platform, architecture, locale and region (default: this machine, `enUS`, `US`). The region matters:
 the Mac game binary for CN differs from everyone else's. `--max-priority` and `--data-limit-mb` cut the data stage
 short for trial runs. `--cdn host[:port],...` tries those hosts first and Blizzard's after them (our mirror,
-below); a host may name its scheme, e.g. `--cdn https://everlake.example.com` for a mirror behind a TLS proxy.
+below); a host may name its scheme (`http://` is the default, `https://` also works).
 
 ## Joining a realm
 
@@ -98,8 +98,10 @@ The patching follows jibay442/forever_docker (key store) and Arctium's launcher 
 
 ## The mirror (our own CDN)
 
-`mirror` runs on the server and answers like Blizzard's CDN, so a launcher keeps installing when Blizzard's CDN is
-down or slow (design and later steps: [docs/cdn-and-peers.md](docs/cdn-and-peers.md)).
+`mirror` runs on the server and answers like Blizzard's CDN, so a launcher on the same home network keeps installing
+when Blizzard's CDN is down or slow (design and later steps: [docs/cdn-and-peers.md](docs/cdn-and-peers.md)). It is
+for the local network only: it is never published to the internet. Players elsewhere download from Blizzard and,
+later, from each other.
 
 ```sh
 ./everlake-launcher mirror --store /srv/cdn --prefetch               # serve on :8087, fetch the pinned build in the background
