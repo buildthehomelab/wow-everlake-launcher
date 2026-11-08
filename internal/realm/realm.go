@@ -112,6 +112,10 @@ type Login struct {
 	GameAccount string // e.g. WoW1
 }
 
+// ErrRefused is a sign-in the login server turned down (a wrong email or password, a locked account), as opposed to
+// one that never reached it.
+var ErrRefused = errors.New("sign-in refused")
+
 // SignIn signs in with email and password the way Battle.net's launcher does against a TrinityCore login server:
 // /login/ (email + password -> ticket), /launcher/remember/ (ticket -> launcher token), /launcher/login/
 // (token -> a fresh ticket and the game accounts). client may be nil.
@@ -155,7 +159,7 @@ func SignIn(ctx context.Context, s Settings, client *http.Client, email, passwor
 	}
 	str := func(m map[string]any, k string) string { v, _ := m[k].(string); return v }
 
-	_, r, err := post("/login/", map[string]any{"version": "1.0", "inputs": []map[string]string{
+	status, r, err := post("/login/", map[string]any{"version": "1.0", "inputs": []map[string]string{
 		{"input_id": "account_name", "value": email},
 		{"input_id": "password", "value": password},
 	}}, "")
@@ -164,13 +168,18 @@ func SignIn(ctx context.Context, s Settings, client *http.Client, email, passwor
 	}
 	ticket := str(r, "login_ticket")
 	if ticket == "" {
-		why := str(r, "authentication_state")
+		// Only the login server's own answer is a refusal: a proxy's error page while it restarts is not.
+		state := str(r, "authentication_state")
+		if status != http.StatusOK || state == "" {
+			return nil, fmt.Errorf("login server %s answered %d without a ticket; try again in a minute", s.LoginHost, status)
+		}
+		why := str(r, "error_message")
 		if why == "" {
 			why = "wrong email or password"
 		}
-		return nil, fmt.Errorf("sign-in refused: %s", why)
+		return nil, fmt.Errorf("%w: %s (%s)", ErrRefused, why, state)
 	}
-	status, r, err := post("/launcher/remember/", nil, ticket)
+	status, r, err = post("/launcher/remember/", nil, ticket)
 	if err != nil {
 		return nil, err
 	}

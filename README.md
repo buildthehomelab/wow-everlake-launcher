@@ -10,8 +10,13 @@ and compiled in, so a launcher release always installs exactly the client the re
 ## Starting it
 
 **Double-click it.** The launcher opens as an app window with **Play**, **Install / update** and **Verify**, the
-sign-in fields, and its output live. There's no console window and no browser tab. It uses the install folder
-`C:\Everlake` on Windows and `~/Everlake` on macOS.
+sign-in fields, and its output live. There's no console window and no browser tab. It installs to `C:\Everlake` on
+Windows and `~/Everlake` on macOS until you pick another folder: **Change** next to the folder opens the system's
+folder dialog (**Browse…**) or takes a typed path. A folder that already holds the game is used as it is (so you can
+move an install and point the launcher at it); a folder with other things in it, or a drive root, gets an `Everlake`
+folder inside it. Nothing is moved for you: after a change, Install downloads the game into the new folder. The
+choice is saved in `launcher.json` in your config folder (`%AppData%\Everlake` on Windows, `~/Library/Application
+Support/Everlake` on macOS); `ui --dir` starts on another folder without changing it.
 
 ![The launcher's window](docs/images/launcher-window.png)
 
@@ -115,7 +120,8 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
 
 `play` (Windows) does what Battle.net does for Blizzard's realms, against a TrinityCore login server:
 
-1. Signs in with your email and password (asked for; or `EVERLAKE_PASSWORD`) over HTTPS on port 8081, and gets a
+1. Signs in with your email and password (asked for; or `EVERLAKE_PASSWORD`; or the remembered one) over HTTPS on
+   port 8081, and gets a
    login ticket and your game account. The login server needs a certificate your PC trusts (a real one, or pass
    `--ca` with the realm's own CA).
 2. Leaves the ticket where the game reads it when started with `-launcherlogin`: `HKEY_CURRENT_USER\Software\Blizzard
@@ -137,7 +143,11 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
      launcher keeps watching until the game closes: **leave the launcher running while you play** (closing its window
      is fine; it keeps running in the background).
 
-The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password never is.
+The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password isn't.
+**Remember password** (or `play --remember`) keeps it after a sign-in succeeds, encrypted with DPAPI for your Windows
+user, in the launcher's own `launcher.json` (never in the install folder, never sent back to the page). With the
+password field left empty, Play uses it; unticking the box forgets it on the next Play, and a password the login
+server refuses is forgotten.
 The key table follows jibay442/forever_docker and Karrz1/Karrz-playerbots-wow-forever's Windows launcher; the
 login-name patch follows Arctium's launcher. On macOS, `wow-project-everlake`'s `client/macos/keypatch.c` patches
 from inside the game.

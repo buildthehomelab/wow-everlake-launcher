@@ -1,7 +1,8 @@
 // Command everlake-launcher installs and checks the pinned WoW Forever build from Blizzard's CDN.
 //
 // Started with no command (a double-click), it opens the launcher's window: Install / Verify / Play buttons and the
-// sign-in fields, for the install folder C:\Everlake (Windows) or ~/Everlake (macOS).
+// sign-in fields, for the install folder picked in it (saved in the user's config folder; C:\Everlake on Windows or
+// ~/Everlake on macOS until one is picked).
 //
 //	everlake-launcher install --dir <folder> [--tags OSX,arm64,enUS,US] [--no-data] [--max-priority N] [--data-limit-mb N]
 //	everlake-launcher verify  --dir <folder> [--tags ...]
@@ -9,7 +10,8 @@
 //	everlake-launcher pin     [--product wowf]      prints a pin for the build that is live now (to review, not to follow)
 //	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
 //	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows)
-//	everlake-launcher ui      [--dir <folder>] [--browser]   the launcher's window (or the same page in the browser)
+//	everlake-launcher ui      [--dir <folder>] [--browser]   the launcher's window (or the same page in the browser);
+//	                                                         --dir starts it on that folder instead of the saved one
 //	everlake-launcher mirror  --store <folder> [--prefetch]   Everlake's own CDN (runs on the server)
 package main
 
@@ -34,8 +36,10 @@ import (
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/appwindow"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/folderpick"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/settings"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/webui"
 )
@@ -445,8 +449,13 @@ func runInstall(ctx context.Context, opts install.Options, log func(string)) err
 	return nil
 }
 
-// defaultDir is the install folder the window uses when none is given: C:\Everlake on Windows (where the test builds
-// have always installed), ~/Everlake elsewhere.
+// uiDir is the install folder the window opens on: the one picked in it last time, else defaultDir.
+func uiDir() string {
+	return settings.InstallDir(defaultDir())
+}
+
+// defaultDir is the install folder the window uses before one is picked: C:\Everlake on Windows (where the test
+// builds have always installed), ~/Everlake elsewhere.
 func defaultDir() string {
 	if runtime.GOOS == "windows" {
 		return `C:\Everlake`
@@ -455,6 +464,27 @@ func defaultDir() string {
 		return filepath.Join(home, "Everlake")
 	}
 	return "Everlake"
+}
+
+// pickFolder is the page's Browse button: the system's folder dialog.
+func pickFolder(start string) (string, bool, error) {
+	p, err := folderpick.Pick("Choose where to install Everlake", start)
+	if errors.Is(err, folderpick.ErrCancelled) {
+		return "", true, nil
+	}
+	return p, false, err
+}
+
+// useFolder turns a picked or typed folder into the install folder. A folder with the launcher's records in it
+// counts as an install even before the first one finishes, so a half-done download is picked up, not nested.
+func useFolder(picked string) (string, bool, error) {
+	return settings.ChooseInstallDir(picked, func(d string) bool {
+		if _, err := install.ReadState(d); err == nil {
+			return true
+		}
+		fi, err := os.Stat(filepath.Join(d, ".everlake"))
+		return err == nil && fi.IsDir()
+	})
 }
 
 // How the ui shows its page.
@@ -468,12 +498,12 @@ const (
 
 // cmdApp is what a double-click runs: the window for the default folder.
 func cmdApp(ctx context.Context) error {
-	return runUI(ctx, defaultDir(), "127.0.0.1:0", showWindow, true)
+	return runUI(ctx, uiDir(), "127.0.0.1:0", showWindow, true)
 }
 
 func cmdUI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
-	dir := fs.String("dir", defaultDir(), "install folder")
+	dir := fs.String("dir", uiDir(), "install folder to start on (default: the one picked last time)")
 	addr := fs.String("addr", "127.0.0.1:0", "address to listen on (loopback only)")
 	browser := fs.Bool("browser", false, "show the page in the browser instead of the launcher's window")
 	noOpen := fs.Bool("no-open", false, "show nothing: just serve the page")
@@ -499,14 +529,19 @@ func cmdUI(ctx context.Context, args []string) error {
 // terminal (detached), it ends a while after the last page closes.
 func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) error {
 	srv := webui.New(dir, pin.Default().Version, webui.Actions{
-		Install: func(ctx context.Context, log func(string)) error {
+		Install: func(ctx context.Context, dir string, log func(string)) error {
 			return runInstall(ctx, installOptions(ctx, dir, false), log)
 		},
-		Verify: func(ctx context.Context, log func(string)) error {
+		Verify: func(ctx context.Context, dir string, log func(string)) error {
 			return runInstall(ctx, installOptions(ctx, dir, true), log)
 		},
-		Play:  uiPlay(dir),
-		Realm: uiRealm(dir),
+		Play:       uiPlay(),
+		Realm:      uiRealm(),
+		PickFolder: pickFolder,
+		UseFolder:  useFolder,
+		SaveFolder: func(dir string) error {
+			return settings.Update(func(s *settings.Settings) { s.InstallDir = dir })
+		},
 	})
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
