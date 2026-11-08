@@ -5,16 +5,22 @@
 #                                                    everlake-launcher-cli-windows-amd64.exe for typing commands
 #   scripts/package.sh macos   [version] [outdir]   Everlake-Launcher-macos.zip and .dmg: "Everlake Launcher.app",
 #                                                    one universal binary (Apple silicon + Intel)
+#   scripts/package.sh sums    [-]       [outdir]   SHA256SUMS.txt over what's there (last, before uploading)
+#
+# The version is the release's tag (v0.1.0-alpha.14): launchers compare it with the Latest release's tag to update.
 #
 # windows builds anywhere (no cgo). macos needs a Mac: the window uses Cocoa and WebKit through cgo.
 set -eu
 
-target=${1:?usage: scripts/package.sh windows|macos [version] [outdir]}
+target=${1:?usage: scripts/package.sh windows|macos|sums [version] [outdir]}
 version=${2:-dev}
 out=${3:-dist}
 cd "$(dirname "$0")/.."
 mkdir -p "$out"
 ldflags="-s -w -X main.version=$version"
+# Each build is told which release file it is (main.updateAsset), so it can fetch its own next version. A version
+# that isn't a release's ("dev", "ci-1a2b3c4") never updates, whatever it's told.
+asset() { echo "-X main.updateAsset=$1"; }
 
 case "$target" in
 windows)
@@ -24,11 +30,13 @@ windows)
 	trap 'rm -f "$syso"' EXIT
 	# -H=windowsgui: a GUI program, so a double-click opens the window and no console with it.
 	go run ./scripts/winres -version "$version" -name everlake-launcher-windows-amd64.exe -out "$syso"
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags -H=windowsgui" \
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+		-ldflags "$ldflags $(asset everlake-launcher-windows-amd64.exe) -H=windowsgui" \
 		-o "$out/everlake-launcher-windows-amd64.exe" ./cmd/everlake-launcher
 	# The same program as a console one: a terminal waits for it, and play can ask for the password.
 	go run ./scripts/winres -version "$version" -name everlake-launcher-cli-windows-amd64.exe -out "$syso"
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags" \
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+		-ldflags "$ldflags $(asset everlake-launcher-cli-windows-amd64.exe)" \
 		-o "$out/everlake-launcher-cli-windows-amd64.exe" ./cmd/everlake-launcher
 	;;
 macos)
@@ -41,7 +49,7 @@ macos)
 	if [ "$minor" -le 24 ]; then macos=11.0; elif [ "$minor" -le 26 ]; then macos=12.0; else macos=13.0; fi
 	export MACOSX_DEPLOYMENT_TARGET=$macos
 	for arch in arm64 amd64; do
-		CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$ldflags" \
+		CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$ldflags $(asset Everlake-Launcher-macos.zip)" \
 			-o "$work/everlake-launcher-$arch" ./cmd/everlake-launcher
 	done
 	app="$work/Everlake Launcher.app"
@@ -90,8 +98,19 @@ EOF
 	hdiutil create -quiet -volname "Everlake Launcher" -srcfolder "$work/dmg" -ov -format UDZO \
 		"$out/Everlake-Launcher-macos.dmg"
 	;;
+sums)
+	# SHA256SUMS.txt for every file in the folder: a launcher only puts in an update that matches it.
+	cd "$out"
+	: >SHA256SUMS.txt.tmp
+	for f in *.exe *.zip *.dmg; do
+		if [ -f "$f" ]; then shasum -a 256 -- "$f" >>SHA256SUMS.txt.tmp; fi
+	done
+	mv SHA256SUMS.txt.tmp SHA256SUMS.txt
+	cat SHA256SUMS.txt
+	exit 0
+	;;
 *)
-	echo "usage: scripts/package.sh windows|macos [version] [outdir]" >&2
+	echo "usage: scripts/package.sh windows|macos|sums [version] [outdir]" >&2
 	exit 2
 	;;
 esac
