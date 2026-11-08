@@ -25,6 +25,10 @@ type Settings struct {
 	// Updated is the last launcher update put in place: a copy that is still older than that release after
 	// restarting (a release built with the wrong version) doesn't fetch it again and again.
 	Updated *UpdateRecord `json:"updated,omitempty"`
+	// School is the launcher window's colour, picked on its page; empty means a different one each launch.
+	School string `json:"school,omitempty"`
+	// Animation false keeps the window's art still; missing follows the system's "reduce motion" setting.
+	Animation *bool `json:"animation,omitempty"`
 }
 
 // UpdateRecord is a launcher update that was put in place.

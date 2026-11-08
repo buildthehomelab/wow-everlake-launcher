@@ -330,10 +330,8 @@ button:disabled { cursor: default; }
   .status { margin-top: 18px; }
   .realm, .actions { margin-top: 16px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .status.run .glint, .bar.unknown .fill { animation: none; }
-  .play::before { transition: none; }
-}
+/* Animation off (the footer's switch, or the system's "reduce motion" until it's used): nothing on the page moves. */
+body.still *, body.still *::before, body.still *::after { animation: none !important; transition: none !important; }
 </style>
 </head>
 <body data-school="fire">
@@ -403,6 +401,7 @@ button:disabled { cursor: default; }
     <span class="path" id="path"></span>
     <button class="linkish" id="pathEdit" type="button" title="Change the install folder">Change</button>
     <div class="schools" id="schools" role="group" aria-label="Colour"></div>
+    <button class="linkish" id="motion" type="button" aria-pressed="true">Animation on</button>
     <button class="linkish" id="logToggle" type="button" aria-expanded="false">Log</button>
   </footer>
 </main>
@@ -414,13 +413,16 @@ button:disabled { cursor: default; }
 
 <script>
 // ------------------------------------------------------------------ colour
-// One school of magic per launch, as each class banner has its own colour. A picked one is kept where the page's
-// storage allows it; ?school= picks one, as on the portal.
+// One school of magic per launch, as each class banner has its own colour. A picked one is kept by the launcher (it
+// puts it on <body> as data-saved-school before the page loads); ?school= picks one, as on the portal.
 const SCHOOLS = { fel: "#4b3cf0", fire: "#f0531c", holy: "#f29b2e", nature: "#3fbf5c", frost: "#2f8cf2" };
-let school = new URLSearchParams(location.search).get("school");
-if (!SCHOOLS[school]) {
-  try { school = localStorage.getItem("everlake.school"); } catch (e) { /* no storage */ }
+// The page lives at a new address each launch, so its own storage is gone next time: the launcher keeps the look.
+function saveLook(change) {
+  fetch("look", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) })
+    .catch(() => { /* kept for this window only */ });
 }
+let school = new URLSearchParams(location.search).get("school");
+if (!SCHOOLS[school]) school = document.body.dataset.savedSchool;
 if (!SCHOOLS[school]) {
   const names = Object.keys(SCHOOLS);
   school = names[Math.floor(Math.random() * names.length)];
@@ -448,7 +450,7 @@ tintFrame();
       document.body.dataset.school = name;
       tintFrame();
       for (const o of host.children) o.setAttribute("aria-pressed", String(o === b));
-      try { localStorage.setItem("everlake.school", name); } catch (e) { /* no storage */ }
+      saveLook({ school: name });
     };
     host.appendChild(b);
   }
@@ -461,7 +463,6 @@ tintFrame();
 const spell = (function () {
   const host = document.querySelector(".spell");
   const NS = "http://www.w3.org/2000/svg";
-  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const TRAIL = -Math.PI / 3; // the flames stream up and to the right
 
   function rng(seed) {
@@ -538,19 +539,52 @@ const spell = (function () {
   }
   host.appendChild(svg);
 
-  let i = 0, timer = null;
+  let i = 0, timer = null, ms = 125, still = false;
   frames[0].classList.add("on");
-  function pace(ms) {
-    if (still) return;
+  function show(n) {
+    frames[i].classList.remove("on");
+    i = n;
+    frames[i].classList.add("on");
+  }
+  function pace(next) {
+    ms = next;
     clearInterval(timer);
-    timer = setInterval(() => {
-      frames[i].classList.remove("on");
-      i = (i + 1) % frames.length;
-      frames[i].classList.add("on");
-    }, ms);
+    timer = null;
+    if (still) return;
+    timer = setInterval(() => show((i + 1) % frames.length), ms);
   }
   pace(125); // 8 drawings a second, "on twos" as hand-drawn animation does
-  return { idle: () => pace(125), work: () => pace(83) };
+  return {
+    idle: () => pace(125),
+    work: () => pace(83),
+    // Still holds the first drawing; moving again picks up the pace it was left at.
+    still: on => { still = on; if (on) show(0); pace(ms); },
+  };
+})();
+
+// ------------------------------------------------------------------ animation switch
+// Off stops the burst and everything else that moves. Until it's used, the system's "reduce motion" setting decides;
+// once it is, the launcher keeps the choice (data-animation on <body>).
+(function motion() {
+  const button = document.getElementById("motion");
+  const saved = document.body.dataset.animation;
+  const quiet = window.matchMedia("(prefers-reduced-motion: reduce)");
+  function set(on) {
+    document.body.classList.toggle("still", !on);
+    spell.still(!on);
+    button.textContent = on ? "Animation on" : "Animation off";
+    button.title = on ? "Stop the animation" : "Animate the art";
+    button.setAttribute("aria-pressed", String(on));
+  }
+  let chosen = saved === "true" || saved === "false";
+  set(chosen ? saved === "true" : !quiet.matches);
+  if (quiet.addEventListener) quiet.addEventListener("change", e => { if (!chosen) set(!e.matches); });
+  button.onclick = () => {
+    const on = button.getAttribute("aria-pressed") !== "true";
+    chosen = true;
+    set(on);
+    saveLook({ animation: on });
+  };
 })();
 
 // ------------------------------------------------------------------ state
