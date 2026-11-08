@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -64,7 +65,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   everlake-launcher install --dir <folder> [--tags OSX,arm64,enUS,US] [--jobs 8]
                             [--no-data] [--max-priority N] [--data-limit-mb N]
-  everlake-launcher verify  --dir <folder>          (checks what install fetched; --tags etc. override)
+  everlake-launcher verify  --dir <folder> [--quick]   (full hash check, or --quick: size and timestamps only)
   everlake-launcher show    [--tags ...]
   everlake-launcher pin     [--product wowf] [--region us]
   everlake-launcher start   --dir <folder> [-- game arguments]
@@ -112,9 +113,13 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 	maxPrio := fs.Int("max-priority", 1<<30, "only data files at or below this download priority")
 	limitMB := fs.Int64("data-limit-mb", 0, "stop the data stage after about this many MB (trial runs)")
 	hosts := fs.String("cdn", "", "comma-separated CDN hosts to try before Blizzard's (a mirror)")
+	quick := fs.Bool("quick", false, "verify: check the client files by size and timestamp only (fast, no hashing)")
 	fs.Parse(args)
 	if *dir == "" {
 		return fmt.Errorf("%s: --dir is required", name)
+	}
+	if verify && *quick {
+		return quickVerify(*dir)
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -179,6 +184,33 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 			logf("everything checked is intact")
 		}
 	}
+	return nil
+}
+
+// quickVerify checks the client files by size and timestamp only — the fast check for every launch. It falls back
+// to a note when the install is too old to have fingerprints.
+func quickVerify(dir string) error {
+	start := time.Now()
+	rep, err := install.QuickVerify(dir)
+	if errors.Is(err, install.ErrNoFingerprints) {
+		logf("%s was installed before quick checks; run 'verify' (without --quick) for a full hash check", dir)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, b := range rep.Bad {
+		logf("CHANGED %s", b)
+	}
+	for _, m := range rep.Missing {
+		logf("MISSING %s", m)
+	}
+	logf("quick check of %s in %s", dir, time.Since(start).Round(time.Millisecond))
+	if rep.Failed() {
+		return fmt.Errorf("%d changed, %d missing; run 'verify' (without --quick) to repair", len(rep.Bad),
+			len(rep.Missing))
+	}
+	logf("client files intact (size and timestamps; the game data isn't deep-checked — 'verify' does that)")
 	return nil
 }
 

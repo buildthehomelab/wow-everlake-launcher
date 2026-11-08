@@ -931,18 +931,109 @@ type State struct {
 	MaxPriority *int      `json:"max_priority,omitempty"`
 	DataLimit   int64     `json:"data_limit_bytes,omitempty"` // a trial run: not every data file was fetched
 	Installed   time.Time `json:"installed"`
+	// Files fingerprints the client files the launcher owns and the game doesn't rewrite (the loose files, the
+	// configs and indexes, .build.info, .flavor.info), so a quick check can confirm they're untouched without
+	// reading every byte. The game's own storage, Data/data, is left out: the game streams into it, so only a full
+	// verify checks it.
+	Files []FileFP `json:"files,omitempty"`
 }
+
+// FileFP is one file's path (relative to the install folder), size and modification time.
+type FileFP struct {
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
+	ModNS int64  `json:"mod_ns"`
+}
+
+// ErrNoFingerprints means the install predates the quick-check fingerprints, so only a full verify can check it.
+var ErrNoFingerprints = errors.New("this install has no quick-check fingerprints; run a full verify")
 
 func (r *run) writeState() error {
 	s := State{Pin: r.Pin, Tags: r.Tags, NoData: r.NoData, MaxPriority: r.MaxPriority, Installed: time.Now().UTC()}
 	if r.rep.DataSkippedByLimit > 0 {
 		s.DataLimit = r.DataLimit
 	}
+	files, err := fingerprint(r.Dir, r.Pin.GameFolder)
+	if err != nil {
+		return err
+	}
+	s.Files = files
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeFile(filepath.Join(r.Dir, ".everlake", "install.json"), append(data, '\n'), 0o644)
+}
+
+// fingerprint records the size and modification time of the client files the launcher owns: everything under
+// Data/config, Data/indices and the game folder (the loose files and .flavor.info), plus .build.info. The game's
+// own storage (Data/data) and the launcher's own records (.everlake) are left out. It is called right after an
+// install writes those files, so the times it records are the install's.
+func fingerprint(dir, gameFolder string) ([]FileFP, error) {
+	var out []FileFP
+	roots := []string{filepath.Join(dir, "Data", "config"), filepath.Join(dir, "Data", "indices"),
+		filepath.Join(dir, gameFolder)}
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) && p == root {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(dir, p)
+			if err != nil {
+				return err
+			}
+			out = append(out, FileFP{Path: filepath.ToSlash(rel), Size: info.Size(), ModNS: info.ModTime().UnixNano()})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if info, err := os.Stat(filepath.Join(dir, ".build.info")); err == nil {
+		out = append(out, FileFP{Path: ".build.info", Size: info.Size(), ModNS: info.ModTime().UnixNano()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// QuickVerify checks the fingerprinted client files by size and modification time only, without reading or hashing
+// their bytes or asking the CDN. It is the fast check for every launch; a full verify is the thorough one. It never
+// writes. The game's storage (Data/data) is not covered, so a clean quick check doesn't prove the game data is
+// complete, only that the client files are as the install left them.
+func QuickVerify(dir string) (*Report, error) {
+	st, err := ReadState(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", dir, ErrNoInstall)
+	}
+	if len(st.Files) == 0 {
+		return nil, ErrNoFingerprints
+	}
+	rep := &Report{Version: st.Pin.Version, BuildConfig: st.Pin.BuildConfig, CDNConfig: st.Pin.CDNConfig, Where: dir}
+	for _, f := range st.Files {
+		p := filepath.Join(dir, filepath.FromSlash(f.Path))
+		info, err := os.Stat(p)
+		switch {
+		case os.IsNotExist(err):
+			rep.Missing = append(rep.Missing, p)
+		case err != nil:
+			return nil, err
+		case info.Size() != f.Size || info.ModTime().UnixNano() != f.ModNS:
+			rep.Bad = append(rep.Bad, p)
+		}
+	}
+	sort.Strings(rep.Bad)
+	sort.Strings(rep.Missing)
+	return rep, nil
 }
 
 // ReadState reads what the last complete install recorded, if any.
