@@ -42,6 +42,9 @@ type Actions struct {
 	SaveFolder func(dir string) error
 	// Installed reports whether a folder holds a finished install; nil means install.ReadState.
 	Installed func(dir string) bool
+
+	// LauncherVersion is the launcher's own version, shown on the page.
+	LauncherVersion string
 }
 
 // PlayInput is the sign-in the page sends with Play. An empty LoginHost starts the game without joining a realm.
@@ -69,8 +72,9 @@ type Server struct {
 	version string
 	act     Actions
 
-	mu   sync.Mutex
-	busy string // the running job's name, or ""
+	mu     sync.Mutex
+	busy   string // the running job's name, or ""
+	notice string // something the launcher wants the player to know about itself (an update it can't do)
 
 	submu    sync.Mutex
 	subs     map[chan string]struct{}
@@ -141,6 +145,8 @@ type statusResp struct {
 	Dir       string      `json:"dir"`
 	CanPick   bool        `json:"can_pick"` // the page may offer the system's folder dialog
 	Version   string      `json:"version"`
+	Launcher  string      `json:"launcher,omitempty"`
+	Notice    string      `json:"notice,omitempty"`
 	Installed bool        `json:"installed"`
 	Busy      string      `json:"busy"`
 	Realm     RealmStatus `json:"realm"`
@@ -156,9 +162,9 @@ type statusResp struct {
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	var resp statusResp
 	s.mu.Lock()
-	resp.Dir, resp.Busy = s.dir, s.busy
+	resp.Dir, resp.Busy, resp.Notice = s.dir, s.busy, s.notice
 	s.mu.Unlock()
-	resp.Version = s.version
+	resp.Version, resp.Launcher = s.version, s.act.LauncherVersion
 	resp.CanPick = s.act.PickFolder != nil
 	if s.act.Realm != nil {
 		resp.Realm = s.act.Realm(resp.Dir)
@@ -198,12 +204,43 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if busy, ok := s.begin(name, func(dir string) error { return s.do(name, dir, in) }); !ok {
+		http.Error(w, busy+" is already running", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// Begin runs job in the background as the named job, the way the page's buttons start theirs: the page shows it
+// running with its log lines, and nothing else starts until it ends. The launcher uses it for jobs of its own (its
+// update). It reports false, starting nothing, while another job is running.
+func (s *Server) Begin(name string, job func(log func(string)) error) bool {
+	_, ok := s.begin(name, func(string) error { return job(s.broadcast) })
+	return ok
+}
+
+// SetNotice shows a line about the launcher itself on the page (an update it can't do by itself); "" clears it.
+func (s *Server) SetNotice(text string) {
+	s.mu.Lock()
+	s.notice = text
+	s.mu.Unlock()
+}
+
+// Busy names the running job, or is "".
+func (s *Server) Busy() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy
+}
+
+// begin marks the server busy with name and runs job (given the install folder) in the background; it reports the
+// running job instead when there is one.
+func (s *Server) begin(name string, job func(dir string) error) (string, bool) {
 	s.mu.Lock()
 	if s.busy != "" {
 		busy := s.busy
 		s.mu.Unlock()
-		http.Error(w, busy+" is already running", http.StatusConflict)
-		return
+		return busy, false
 	}
 	s.busy = name
 	dir := s.dir
@@ -215,7 +252,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	s.broadcast(fmt.Sprintf("--- %s ---", name))
 
 	go func() {
-		err := s.do(name, dir, in)
+		err := job(dir)
 		if err != nil {
 			s.broadcast("error: " + err.Error())
 		}
@@ -224,7 +261,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		s.busy = ""
 		s.mu.Unlock()
 	}()
-	w.WriteHeader(http.StatusAccepted)
+	return "", true
 }
 
 func (s *Server) do(name, dir string, in PlayInput) error {

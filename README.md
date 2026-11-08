@@ -33,6 +33,53 @@ gets the same page in its browser instead, and the launcher ends a couple of min
 Closing the window ends the launcher, except while a game it joined to a realm is running: it then keeps going in the
 background, keeping the realm's key in the game, and ends when the game closes.
 
+## Updating itself
+
+The launcher keeps itself up to date. When its window opens, and every hour while it stays open, it asks GitHub
+for this repository's **Latest** release (drafts and pre-releases never count). If that release's tag is a newer
+version than its own, it updates itself, and the page shows it as a job (*Updating the launcher*, with a progress bar)
+while the buttons wait:
+
+1. It downloads its own file from that release (`everlake-launcher-windows-amd64.exe`,
+   `everlake-launcher-cli-windows-amd64.exe` or `Everlake-Launcher-macos.zip`) into the folder it's in.
+2. It checks the file against the release's `SHA256SUMS.txt` and refuses it if they differ. On macOS the unpacked
+   app must also pass `codesign --verify`.
+3. It runs the new copy with `version`, which must answer the release's tag. A copy that won't start (an antivirus
+   took it, a broken build) or that names another version never goes in.
+4. It moves itself aside (`<name>.old`; Windows lets a running program be renamed, not deleted) and puts the new
+   copy in its place. The window's next start removes the `.old` copy.
+5. The window closes and the new version opens in its place. If it doesn't start and the new copy has gone, the old
+   one is put back.
+
+It never updates while Install, Verify or Play is running or while a game it started is open. It waits until they
+finish. It never goes back to an older version. A download that stalls for a minute is given up. A failed update is
+tried at most three times per release until the launcher is next opened. If the folder it's in can't be written to,
+or macOS is running it from a temporary copy (*App Translocation*: move the app to Applications first), the page says
+so under the version line. `"auto_update": false` in `launcher.json` turns it off.
+
+Updates are only as trustworthy as this repository's releases: the hashes come from the same release as the files, so
+they catch a damaged download, not a release published by someone who shouldn't. Signing `SHA256SUMS.txt` with a key
+built into the launcher would close that.
+
+`update` does the same from a terminal (`update --check` only says whether there's a newer one); a launcher started
+from a terminal (`ui --browser`, `--no-open`) doesn't update by itself. Only release builds
+update: `scripts/package.sh` tells each build which release file it is. A `go build`, or a build whose version isn't a
+release tag (`dev`, CI's `ci-1a2b3c4`), never replaces itself. Launchers older than this feature (v0.1.0-alpha.13 and
+before) have no updater, so they have to be downloaded once by hand.
+
+**Releasing** (the version must be the tag, since launchers compare the two):
+
+```sh
+scripts/package.sh windows v0.1.0-alpha.14
+scripts/package.sh macos   v0.1.0-alpha.14     # on a Mac
+scripts/package.sh sums
+gh release create v0.1.0-alpha.14 --draft dist/*    # every file uploaded before anyone can see it
+gh release edit   v0.1.0-alpha.14 --draft=false --latest   # a full release: pre-releases aren't offered as updates
+```
+
+Open launchers pick the update up within the hour (once idle), the rest when they next open. Without
+`SHA256SUMS.txt` (or with a file missing from it) the release isn't installed.
+
 ## Status
 
 Work in progress. What works today:
@@ -102,6 +149,7 @@ go build -o everlake-launcher ./cmd/everlake-launcher
 ./everlake-launcher                                         # the window, for ~/Everlake (what a double-click does)
 ./everlake-launcher ui      --dir ~/Everlake                # the window, for another folder
 ./everlake-launcher ui      --dir ~/Everlake --browser      # the same page in the browser instead
+./everlake-launcher update  [--check]                       # move to the newest release (the window does it itself)
 everlake-launcher.exe play --dir C:\Everlake --login-host login.realm.example.com --email you@example.com
 ```
 

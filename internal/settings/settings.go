@@ -20,7 +20,21 @@ type Settings struct {
 	InstallDir string `json:"install_dir,omitempty"`
 	// Passwords are remembered passwords, sealed for this user (internal/secret), by PasswordKey.
 	Passwords map[string][]byte `json:"passwords,omitempty"`
+	// AutoUpdate false stops the launcher updating itself; missing means on.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
+	// Updated is the last launcher update put in place: a copy that is still older than that release after
+	// restarting (a release built with the wrong version) doesn't fetch it again and again.
+	Updated *UpdateRecord `json:"updated,omitempty"`
 }
+
+// UpdateRecord is a launcher update that was put in place.
+type UpdateRecord struct {
+	Path string `json:"path"` // the program or .app replaced
+	Tag  string `json:"tag"`  // the release it came from
+}
+
+// AutoUpdates reports whether the launcher may update itself.
+func (s Settings) AutoUpdates() bool { return s.AutoUpdate == nil || *s.AutoUpdate }
 
 // PasswordKey names a remembered password: one per login server and account.
 func PasswordKey(loginHost, email string) string {

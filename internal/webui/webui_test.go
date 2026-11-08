@@ -401,3 +401,39 @@ func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// The launcher's own jobs (its update) run like the page's: the page sees them busy, and buttons wait.
+func TestBeginLauncherJob(t *testing.T) {
+	srv := New(t.TempDir(), "x", Actions{LauncherVersion: "v0.1.0-alpha.14"})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	release := make(chan struct{})
+	done := make(chan struct{})
+	if !srv.Begin("update", func(log func(string)) error {
+		log("launcher: 1.0 of 2.0 MB")
+		<-release
+		close(done)
+		return nil
+	}) {
+		t.Fatal("Begin refused on an idle launcher")
+	}
+	var s statusResp
+	json.Unmarshal([]byte(get(t, ts.URL+"/status")), &s)
+	if s.Busy != "update" || s.Launcher != "v0.1.0-alpha.14" || srv.Busy() != "update" {
+		t.Errorf("status during the update: %+v", s)
+	}
+	if code := post(t, ts.URL+"/run?name=install"); code != http.StatusConflict {
+		t.Errorf("install during the update: %d", code)
+	}
+	if srv.Begin("update", func(func(string)) error { return nil }) {
+		t.Error("a second launcher job started during the first")
+	}
+	close(release)
+	<-done
+	for i := 0; srv.Busy() != "" && i < 100; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.Busy() != "" {
+		t.Fatal("still busy after the job ended")
+	}
+}

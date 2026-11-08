@@ -13,6 +13,7 @@
 //	everlake-launcher ui      [--dir <folder>] [--browser]   the launcher's window (or the same page in the browser);
 //	                                                         --dir starts it on that folder instead of the saved one
 //	everlake-launcher mirror  --store <folder> [--prefetch]   Everlake's own CDN (runs on the server)
+//	everlake-launcher update  [--check]   moves this launcher to the newest release (the window does it by itself)
 package main
 
 import (
@@ -31,6 +32,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +41,7 @@ import (
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/folderpick"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/selfupdate"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/settings"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/webui"
@@ -86,6 +89,8 @@ func main() {
 		err = cmdUI(ctx, os.Args[2:])
 	case "mirror":
 		err = cmdMirror(ctx, os.Args[2:])
+	case "update":
+		err = cmdUpdate(ctx, os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -109,6 +114,7 @@ func usage() {
   everlake-launcher ui      [--dir <folder>] [--browser | --no-open] [--addr 127.0.0.1:PORT]
   everlake-launcher mirror  --store <folder> [--overlay <folder>] [--addr :8087] [--prefetch | --prefetch-only]
                             [--tags OSX,Windows,x86_64,arm64,enUS,US] [--rate-mb 40] [--quiet]
+  everlake-launcher update  [--check]
 `)
 	os.Exit(2)
 }
@@ -542,6 +548,7 @@ func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) er
 		SaveFolder: func(dir string) error {
 			return settings.Update(func(s *settings.Settings) { s.InstallDir = dir })
 		},
+		LauncherVersion: version,
 	})
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -553,11 +560,43 @@ func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) er
 	go func() { served <- hs.Serve(ln) }()
 	defer hs.Close()
 
+	// The launcher updates itself while it's open (and idle): the page shows it as a job, then the window closes
+	// and the new copy opens in its place, with the same arguments.
+	winCtx, closeWin := context.WithCancel(ctx)
+	defer closeWin()
+	// Only a launcher with no terminal updates itself this way: one started from a terminal (ui --browser,
+	// --no-open) would come back detached from it. Those have `update`.
+	var restartTo atomic.Pointer[selfupdate.Target]
+	if show == showWindow || detached {
+		go autoUpdate(winCtx, srv, func(t selfupdate.Target) { restartTo.Store(&t); closeWin() })
+	}
+	restart := func() error {
+		t := restartTo.Load()
+		if t == nil {
+			// Closed mid-update: the download stops with the window, but the swap itself shouldn't be cut short.
+			for i := 0; i < 300 && srv.Busy() == "update"; i++ {
+				time.Sleep(100 * time.Millisecond)
+			}
+			return nil
+		}
+		hs.Close() // the new copy may want the same address
+		if err := t.Restart(os.Args[1:]); err != nil {
+			msg := "The launcher updated itself but couldn't start again (" + err.Error() + ")."
+			if t.Restore() {
+				msg += " The new copy is gone (an antivirus may have taken it), so the old one is back in its place."
+			} else {
+				msg += " Open it again to use the new version."
+			}
+			appwindow.Alert("Everlake launcher", msg)
+		}
+		return nil
+	}
+
 	if show == showWindow {
-		err := appwindow.Run(appwindow.Options{Title: "Everlake launcher", URL: url, Stop: ctx.Done()})
+		err := appwindow.Run(appwindow.Options{Title: "Everlake launcher", URL: url, Stop: winCtx.Done()})
 		if err == nil {
 			waitForGames(ctx)
-			return nil
+			return restart()
 		}
 		logf("no app window (%v); showing the page in the browser instead", err)
 		show = showBrowser
@@ -579,8 +618,8 @@ func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) er
 				return err
 			}
 			return nil
-		case <-ctx.Done():
-			return nil
+		case <-winCtx.Done():
+			return restart()
 		case <-idle:
 			// Nobody can press Ctrl-C on a launcher started without a terminal: it ends once its page has been
 			// closed for a while, nothing is running, and no game needs it.
