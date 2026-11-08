@@ -44,8 +44,15 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           go build -ldflags "-H=windowsgui -X main.version=gui-ok" -o el.exe ./cmd/everlake-launcher
-          $v = ./el.exe version
-          if ($v -ne 'gui-ok') { Write-Error "version printed '$v'"; exit 1 }
+          # Output redirected to a file: the handles it's given are used, and the caller can wait for it.
+          $p = Start-Process -FilePath ./el.exe -ArgumentList version -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          $v = "$(Get-Content out.txt -Raw)".Trim()
+          Write-Host "exit $($p.ExitCode), stdout '$v', stderr '$(Get-Content err.txt -Raw)'"
+          if ($p.ExitCode -ne 0 -or $v -ne 'gui-ok') { exit 1 }
+          # For the record (not checked): what PowerShell does with a GUI program's output by itself.
+          $plain = ./el.exe version
+          Write-Host "plain call captured '$plain'"
       - name: the window opens and loads a page (WebView2)
         if: runner.os == 'Windows'
         timeout-minutes: 3
