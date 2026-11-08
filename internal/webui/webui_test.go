@@ -216,3 +216,49 @@ func TestPlayGetsSignInAndRealmStatus(t *testing.T) {
 		t.Errorf("bad body: %d", res.StatusCode)
 	}
 }
+
+func TestUnwatched(t *testing.T) {
+	srv := New(t.TempDir(), "x", Actions{})
+	if srv.Unwatched(time.Hour) {
+		t.Error("unwatched right after starting")
+	}
+	if !srv.Unwatched(0) {
+		t.Error("not unwatched with no page and no job")
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// A page with its log stream open keeps the launcher going.
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/events", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.Unwatched(0) {
+		t.Error("unwatched while a page is open")
+	}
+	cancel()
+	res.Body.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for !srv.Unwatched(0) {
+		if time.Now().After(deadline) {
+			t.Fatal("still watched after the page closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.Unwatched(time.Hour) {
+		t.Error("the closed page's time wasn't recorded")
+	}
+
+	// So does a running job.
+	release := make(chan struct{})
+	defer close(release)
+	srv.act.Install = func(ctx context.Context, log func(string)) error { <-release; return nil }
+	if code := post(t, ts.URL+"/run?name=install"); code != http.StatusAccepted {
+		t.Fatalf("run: %d", code)
+	}
+	if srv.Unwatched(0) {
+		t.Error("unwatched while a job runs")
+	}
+}
