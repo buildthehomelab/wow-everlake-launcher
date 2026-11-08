@@ -1,17 +1,21 @@
 # Our own CDN and peer-to-peer downloads
 
-Status: design agreed 2026-11-07. Step 1 (the mirror) built 2026-11-08; the rest not started.
+Status: design agreed 2026-11-07. Step 1 (the mirror) built 2026-11-08; the rest not started. Changed 2026-11-08:
+the mirror stays on the home network and is never published; players elsewhere get files from Blizzard and from
+each other.
 
 The launcher installs the pinned Forever build from Blizzard's CDN. That breaks when Blizzard's CDN is down or
 limits us, and it is slow when another player on the same network already has every file. This adds two more
 places to get files from:
 
-- **The mirror**: a CDN of our own on the Everlake server. It keeps a copy of everything it fetches from Blizzard,
-  and downloads the pinned build ahead of time, so a fresh install never needs Blizzard.
-- **Peers**: other launchers. First on the same network (LAN), later over the internet.
+- **The mirror**: a copy of the CDN on the Everlake server. It keeps everything it fetches from Blizzard and
+  downloads the pinned build ahead of time, so a fresh install on the home network never needs Blizzard. It is
+  reachable on the home network only: no port, route or tunnel puts it on the internet, so the server is no more
+  exposed than it is today.
+- **Peers**: other players' launchers. First on the same network (LAN), later over the internet.
 
-Every launcher tries them in this order: LAN peers, then the mirror, then Blizzard (internet peers later go between
-the mirror and Blizzard).
+Every launcher tries them in this order: LAN peers (at home the mirror is one of them), then internet peers, then
+Blizzard. Away from home that is just other players and Blizzard.
 
 ## Why this is safe
 
@@ -62,17 +66,19 @@ That disk also holds the game's database and has stalled on sync writes before, 
 write (no fsync): a file a crash damages fails its check when next served and is fetched again. The prefetch is
 capped (`--rate-mb`, default 40).
 
-It answers on two faces:
+It listens on a port of the server's own address (8088 on Patronus) and nothing else: no Traefik route, no
+Cloudflare tunnel, no forwarded port. It answers on two faces:
 
-1. **Blizzard's CDN layout** (`/tpr/wow/config/..`, `/tpr/wow/data/..`, with byte ranges). Old launchers, the
-   Mac mini scripts and the game itself can then use it as a normal CDN host.
+1. **Blizzard's CDN layout** (`/tpr/wow/config/..`, `/tpr/wow/data/..`, with byte ranges). Launchers at home
+   (`--cdn 192.168.1.125:8088`), the Mac mini scripts and the game can then use it as a normal CDN host.
    - A whole file or config it has: served from the store.
    - A byte range inside an archive: the mirror keeps archives as sparse files with a list of the ranges stored.
      A stored range is served after checking every file wholly inside it against the archive index; otherwise the
      range is fetched from Blizzard, checked the same way, served, and kept (less any file cut off at its ends).
    - Missing: fetched from Blizzard, checked, kept, served. If Blizzard fails, the answer is an error, never
      unchecked bytes.
-2. **The peer protocol** above, from the same store, with Blizzard behind it.
+2. **The peer protocol** above, from the same store, with Blizzard behind it. It also announces itself on the
+   LAN like any launcher, so launchers at home find it without `--cdn`.
 
 Our own patched builds (the China Undead and gate-2 test builds that `cdn-build` writes) are served first, before
 the store, as `cdn.py` does now.
@@ -96,13 +102,10 @@ ranges are fetched again).
 
 ## The game itself
 
-The running game also streams files it doesn't have from the hosts in `.build.info` ("CDN Hosts"). The launcher
-writes that file, so it can put the mirror first and Blizzard after it; the game then streams from us too. The
-game uses plain HTTP on port 80, so the mirror needs a name on port 80 (a Traefik route on Patronus). Its name
-comes from the player's realm settings, never from this public repo, as with the login host.
-
-Later, the launcher can be the game's CDN itself (a small server on 127.0.0.1 while the game runs), so in-game
-streaming also gets LAN peers. Not in the first steps.
+The running game also streams files it doesn't have from the hosts in `.build.info` ("CDN Hosts"), over plain
+HTTP. The launcher writes that file, so it can put itself first: a small server on 127.0.0.1 while the game runs,
+which asks peers (and the mirror, at home) before Blizzard. Nothing on the server side changes for this, and no
+port 80 anywhere.
 
 ## LAN peers
 
@@ -117,8 +120,15 @@ streaming also gets LAN peers. Not in the first steps.
 
 ## Internet peers (later)
 
-A tracker on the Everlake portal, behind its invite-only sign-in: launchers tell it their address and builds, and
-get back a few peers. That needs UPnP or a forwarded port on the player's side, an upload cap, and the
+Players' launchers serve each other; the server serves no game files to the internet. They still need a way to
+find each other. Two ways, to decide when we get there:
+
+- **A tracker on the portal**, behind its invite-only sign-in: launchers tell it their address and builds and get
+  back a few peers. It hands out addresses only, on a site that is already public, but it is new code there.
+- **No server at all**: a distributed hash table (as BitTorrent's DHT), where launchers find each other directly.
+  Nothing new on the server, but anyone can see which addresses hold the build.
+
+Either way it needs UPnP or a forwarded port on the player's side, an upload cap and an off switch, and the
 same-public-IP trick Evermore's tracker uses (players behind one router get each other's LAN address). Planned
 after the mirror and LAN peers work.
 
@@ -132,13 +142,13 @@ after the mirror and LAN peers work.
 3. **LAN peers** — launchers serve their own storage, find each other, fetch from each other first.
    Done when: a second PC on the network installs mostly from the first (the run's report says how much came
    from where).
-4. **The game streams from the mirror** — `.build.info` lists the mirror first; Traefik route on port 80.
-5. **Internet peers** — portal tracker, UPnP, upload cap.
+4. **The game streams through the launcher** — `.build.info` lists the launcher's 127.0.0.1 server first, which
+   asks peers and the mirror before Blizzard.
+5. **Internet peers** — finding peers (tracker or DHT, above), UPnP, upload cap.
 
 ## Open questions
 
-- Free space on the NVMe for about 89 GB (a 2 TB drive shared with the game server and its database).
-- The mirror's public name on port 80, and whether it can go through Cloudflare (Cloudflare's rules frown on
-  sending tens of GB of game files through its free proxy, so probably a DNS-only name).
-- Whether the mirror's peer protocol should need the portal sign-in, or stay open like Blizzard's CDN. Open is
-  simpler and the files are Blizzard's public files; our own patched builds are also served openly today.
+- How internet peers find each other: a tracker on the portal or a DHT (see above).
+
+Settled: the NVMe has 887 GB free, so the 89 GB copy fits. The mirror is LAN-only, so it needs no public name and
+no sign-in.
