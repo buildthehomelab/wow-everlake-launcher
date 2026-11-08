@@ -11,6 +11,12 @@ import (
 // with it; its length in the table is set to 0 too, in case the check compares that many bytes. wow-project-everlake's
 // client/macos/keypatch.c does the same on macOS.
 //
+// The check only matters while logging in. On Windows the launcher writes the original bytes back as soon as the
+// player is logged in (Restore), and patches again when they're back at the login screen: the live client's
+// protection (Wow_loader.dll) killed the game with a "Security Crash" on entering the world while the patch was in
+// (alpha.7, 2026-11-08). Both setups known to get into the world never patch this: Karrz's launcher, and ours while
+// the server ran on the same Mac, use trinity.actual.battle.net through the hosts file instead.
+//
 // The ending is assembled at run time so this program's own copy of it isn't a NUL-terminated string a scan of the
 // launcher itself could match.
 func portalSuffix() []byte {
@@ -71,6 +77,25 @@ func (p PortalPatch) Apply(m Memory) (suffixes, lengths int) {
 	for _, a := range p.Suffixes {
 		if m.Write(a, blank) {
 			suffixes++
+		}
+	}
+	return suffixes, lengths
+}
+
+// Restore writes the original bytes back: the endings, then the table lengths. It returns how many of each were
+// written.
+func (p PortalPatch) Restore(m Memory) (suffixes, lengths int) {
+	suf := portalSuffix()
+	for _, a := range p.Suffixes {
+		if m.Write(a, suf) {
+			suffixes++
+		}
+	}
+	n := make([]byte, 8)
+	binary.LittleEndian.PutUint64(n, uint64(len(suf)))
+	for _, a := range p.Lengths {
+		if m.Write(a, n) {
+			lengths++
 		}
 	}
 	return suffixes, lengths

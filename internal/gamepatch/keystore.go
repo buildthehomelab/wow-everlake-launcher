@@ -3,14 +3,12 @@
 //
 //   - The server key (this file). When a character enters the world, the server signs EnterEncryptedMode with an
 //     Ed25519 key and the client checks it against one of 12 public keys it keeps in memory, one per region group.
-//     The entry of the server's region group (8) gets the server's public key, in the built-in copy the game
-//     builds its key store from, written once at start-up (see PatchBuiltIn for why not in the store itself).
+//     The entry of the server's region group (8) gets the server's public key.
 //   - The login name (portal.go). The client only logs in at names ending in one of Blizzard's domains; the check is
 //     switched off so a realm can use a name of its own.
 //
-// The key store layout follows jibay442/forever_docker (GPL-2.0, app/src-tauri/src/patcher); where and when to
-// patch follow Arctium's launcher (MIT, src/Launcher.cs and src/Patterns/Common.cs: Portal, CryptoEdPublicKey). The
-// Windows process work is in process_windows.go.
+// The logic follows jibay442/forever_docker (GPL-2.0, app/src-tauri/src/patcher) and Arctium's launcher (MIT,
+// src/Patterns/Common.cs, Portal); the Windows process work is in process_windows.go.
 package gamepatch
 
 import (
@@ -73,7 +71,7 @@ const (
 	patched
 )
 
-// KeyPatcher puts a server's public key into a client and checks it arrived in the key store.
+// KeyPatcher writes a server's public key into a client's key store.
 type KeyPatcher struct {
 	keys   [count][32]byte
 	newKey [32]byte
@@ -166,86 +164,88 @@ func (k *KeyPatcher) findStores(m Memory) []store {
 	return found
 }
 
-// FindBuiltIn looks through the game's image (img, loaded at base) for its built-in copy of the region group's key:
-// every place the 32 bytes of Blizzard's key for that entry appear. The game builds its key store from that copy
-// when a character logs in. ours counts how many places already hold the server's key (a patch made earlier).
-func (k *KeyPatcher) FindBuiltIn(img []byte, base uint64) (orig []uint64, ours int) {
-	find := func(needle []byte, hit func(uint64)) {
-		for i := 0; ; {
-			j := bytes.Index(img[i:], needle)
-			if j < 0 {
-				return
+func (k *KeyPatcher) patch(m Memory, array uint64) error {
+	addr := array + uint64((k.group-1)*entry+4)
+	for i := 0; i < 20; i++ {
+		cur := m.Read(addr, 32)
+		switch {
+		case bytes.Equal(cur, k.newKey[:]):
+			return nil
+		case bytes.Equal(cur, k.keys[k.group-1][:]):
+			if !m.Write(addr, k.newKey[:]) {
+				return fmt.Errorf("the game refused the write")
 			}
-			hit(base + uint64(i+j))
-			i += j + 1
+			if k.state(m, array) != patched {
+				return fmt.Errorf("the key didn't stick")
+			}
+			return nil
 		}
+		time.Sleep(300 * time.Millisecond)
 	}
-	find(k.keys[k.group-1][:], func(a uint64) { orig = append(orig, a) })
-	find(k.newKey[:], func(uint64) { ours++ })
-	return orig, ours
+	return fmt.Errorf("the key store changed while writing")
 }
 
-// PatchBuiltIn writes the server's key at each address FindBuiltIn returned and reports how many writes went in.
+// Watch keeps the server key in the client's key store until the game closes. The store only exists once the game
+// starts connecting to a realm, and the game may free and rebuild it, so it searches again whenever it goes away.
+// ready, if set, is called each time the key is in place (the player has logged in); gone, if set, each time the
+// game frees the store (the player is back at the login screen).
 //
-// This is how the key gets into the game. The live client ships a protection layer, Wow_loader.dll, that the beta
-// forever_docker was written for didn't have. Changing the key store on the heap after the game built it made that
-// layer kill the game with a "Security Crash" on entering the world (Windows, 2026-11-08). Arctium's launcher changes
-// the built-in key in the image instead, once, with the game suspended right after its image unpacks, the same way
-// and at the same time as the login-name patch, so this does the same.
-func (k *KeyPatcher) PatchBuiltIn(m Memory, addrs []uint64) int {
-	n := 0
-	for _, a := range addrs {
-		if m.Write(a, k.newKey[:]) {
-			n++
-		}
-	}
-	return n
-}
-
-// Report watches the game's key store until the game closes and says whether the server's key is in it, without
-// changing anything there (see PatchBuiltIn). The store only exists once the game starts connecting to a realm, and
-// the game may free and rebuild it, so it looks again whenever it goes away.
-func (k *KeyPatcher) Report(m Memory, log func(string)) {
+// Writing the key here is what Karrz1/Karrz-playerbots-wow-forever's Windows launcher does (repack/Play-WoWForever.ps1)
+// on the live client, and what got alpha.7 to the character list. Writing it over a built-in copy isn't possible:
+// the 70790 client builds this store in code that is encrypted on disk, and holds no copy of the keys as data.
+func (k *KeyPatcher) Watch(m Memory, log func(string), ready, gone func()) {
 	var at uint64
-	last := invalid
 	saidWaiting := false
 	for m.Alive() {
 		if at != 0 {
-			st := k.state(m, at)
-			if st == invalid {
-				log("server key: the game freed its key store; looking again at the next login")
-				at, last = 0, invalid
-				continue
+			switch k.state(m, at) {
+			case patched:
+				time.Sleep(2 * time.Second)
+			case original:
+				if err := k.patch(m, at); err != nil {
+					log("server key: " + err.Error())
+					at = 0
+				} else {
+					log("server key: put back")
+					if ready != nil {
+						ready()
+					}
+				}
+			default:
+				log("server key: the game freed its key store; searching again at the next login")
+				at = 0
+				if gone != nil {
+					gone()
+				}
 			}
-			if st != last {
-				k.say(st, log)
-				last = st
-			}
-			time.Sleep(time.Second)
 			continue
 		}
 		stores := k.findStores(m)
 		switch len(stores) {
 		case 1:
+			var err error
+			if stores[0].state != patched {
+				err = k.patch(m, stores[0].addr)
+			}
+			if err != nil {
+				log("server key: " + err.Error() + ", retrying")
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			log(fmt.Sprintf("server key: written (region group %d)", k.group))
 			at = stores[0].addr
+			if ready != nil {
+				ready()
+			}
 		case 0:
 			if !saidWaiting {
 				log("server key: waiting for the game to open its key store (it does when you log in)")
 				saidWaiting = true
 			}
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(150 * time.Millisecond)
 		default:
 			log(fmt.Sprintf("server key: %d key stores at once, waiting", len(stores)))
-			time.Sleep(time.Second)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
-}
-
-func (k *KeyPatcher) say(st state, log func(string)) {
-	if st == patched {
-		log(fmt.Sprintf("server key: in the game's key store (region group %d)", k.group))
-		return
-	}
-	log(fmt.Sprintf("server key: the game's key store still has Blizzard's key for region group %d, so entering the "+
-		"world will fail. The launcher doesn't change it there: the game's protection treats that as tampering", k.group))
 }

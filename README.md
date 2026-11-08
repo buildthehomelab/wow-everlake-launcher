@@ -123,21 +123,22 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
    `CONNECTION_STRING`). Battle.net rewrites these whenever it starts WoW itself.
 3. Writes `_forever_\WTF\Everlake.wtf` (your `Config.wtf` plus the login server) and starts
    `Wow.exe -uid wowf -launcherlogin -config Everlake.wtf`.
-4. Changes two things in the running game's memory, both once at start-up, with the game paused just after its
-   image unpacks (as Arctium's launcher does). The files on disk are never touched.
+4. Changes two things in the running game's memory. The files on disk are never touched.
    - **The login name.** The client only logs in at names ending in one of Blizzard's domains (a table in its data,
-     `.actual.battle.net` first). The ending is blanked, so a realm can use a name of its own. Not needed, and not
+     `.actual.battle.net` first). The ending is blanked while you log in, so a realm can use a name of its own, and
+     put back as soon as you're logged in: the live client's protection (`Wow_loader.dll`) crashes the game ("Security
+     Crash") on entering the world while it's changed. Back at the login screen it's blanked again. Not needed, and not
      done, for a `*.actual.battle.net` login name.
-   - **The server key.** When you enter the world the realm signs a message the client checks against 12 public keys
-     it keeps in memory. Entry 8 (the server's `Network.EnterEncryptedModeRegionGroup`) gets the realm's key:
-     TrinityCore's stock key unless `--server-key` says otherwise. It's written over the game's built-in copy of that
-     key, which the game builds its key store from when you log in. The key store itself is never changed: the live
-     client's protection (`Wow_loader.dll`) crashes the game ("Security Crash") when it is. The launcher keeps reading
-     the store and says in its log whether the realm's key is in it.
+   - **The server key.** The realm signs a message the client checks against 12 public keys it keeps in a table in
+     memory, built when you log in. Entry 8 (the server's `Network.EnterEncryptedModeRegionGroup`) gets the realm's
+     key: TrinityCore's stock key unless `--server-key` says otherwise. The client can rebuild that table, so the
+     launcher keeps watching until the game closes: **leave the launcher running while you play** (closing its window
+     is fine; it keeps running in the background).
 
 The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password never is.
-The key store layout follows jibay442/forever_docker; where and when to patch follow Arctium's launcher (login name,
-Ed25519 key). On macOS, `wow-project-everlake`'s `client/macos/keypatch.c` patches from inside the game.
+The key table follows jibay442/forever_docker and Karrz1/Karrz-playerbots-wow-forever's Windows launcher; the
+login-name patch follows Arctium's launcher. On macOS, `wow-project-everlake`'s `client/macos/keypatch.c` patches
+from inside the game.
 
 ## The mirror (our own CDN)
 
