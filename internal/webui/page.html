@@ -191,9 +191,22 @@ input {
   color: var(--text);
   font: inherit;
 }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--c1); }
 input::placeholder { color: rgba(242, 240, 247, .3); }
 input:focus { outline: none; border-color: var(--c2); }
 .hint { font-size: 12px; color: var(--muted); margin: 0; }
+
+/* ---------------------------------------------------------------- install folder */
+
+.where { margin-top: 22px; display: grid; gap: 10px; }
+.where .realm-line > span, .where .realm-line > button { white-space: nowrap; flex-shrink: 0; }
+.where .realm-line strong { font-family: var(--mono); font-weight: 500; font-size: 12px; }
+.folder-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+.folder-buttons .ghost { flex: 1 1 auto; }
+.folder-buttons .use { border-color: var(--c1); }
+.hint.err { color: var(--error); }
+.hint.ok { color: var(--ok); }
 
 /* ---------------------------------------------------------------- buttons */
 
@@ -267,7 +280,8 @@ button:disabled { cursor: default; }
 .schools button[aria-pressed="true"] { opacity: 1; transform: rotate(45deg) scale(1); outline: 2px solid var(--text); outline-offset: 1px; }
 .schools button:hover { opacity: 1; }
 .linkish { background: none; border: 0; padding: 0; color: var(--c2); font-size: 12px; font-weight: 600; }
-.linkish:hover { color: var(--c3); }
+.linkish:hover:not(:disabled) { color: var(--c3); }
+.linkish:disabled { color: var(--muted); cursor: default; }
 
 /* ---------------------------------------------------------------- the log drawer */
 
@@ -342,6 +356,22 @@ button:disabled { cursor: default; }
     <div class="latest" id="latest" hidden></div>
   </section>
 
+  <section class="where" id="where" hidden>
+    <div class="realm-line" id="folderLine">
+      <span id="folderLabel">Installs to</span> <strong id="folderShown"></strong>
+      <button class="linkish" id="folderEdit" type="button">Change</button>
+    </div>
+    <div id="folderEditor" hidden>
+      <label>Install folder<input id="folderInput" autocomplete="off" spellcheck="false"></label>
+      <div class="folder-buttons" style="margin-top: 10px">
+        <button class="ghost" id="folderBrowse" type="button">Browse…</button>
+        <button class="ghost use" id="folderUse" type="button">Use this folder</button>
+        <button class="ghost" id="folderCancel" type="button">Cancel</button>
+      </div>
+    </div>
+    <p class="hint" id="folderNote" hidden></p>
+  </section>
+
   <section class="realm" id="realm" hidden>
     <div class="realm-line" id="hostLine" hidden>
       Realm <strong id="hostShown"></strong> <button class="linkish" id="hostEdit" type="button">Change</button>
@@ -352,6 +382,8 @@ button:disabled { cursor: default; }
       <label>Email<input id="email" type="email" autocomplete="username" spellcheck="false"></label>
       <label>Password<input id="password" type="password" autocomplete="current-password"></label>
     </div>
+    <label class="check" id="rememberRow" hidden><input id="remember" type="checkbox">Remember password
+      <span class="hint">(encrypted for this Windows user)</span></label>
     <p class="hint" id="realmNote">Leave the login server empty to start the game without joining a realm.</p>
   </section>
   <p class="hint" id="macNote" hidden>On macOS, Play starts the game on its own; joining a realm from the launcher
@@ -367,6 +399,7 @@ button:disabled { cursor: default; }
 
   <footer class="foot">
     <span class="path" id="path"></span>
+    <button class="linkish" id="pathEdit" type="button" title="Change the install folder">Change</button>
     <div class="schools" id="schools" role="group" aria-label="Colour"></div>
     <button class="linkish" id="logToggle" type="button" aria-expanded="false">Log</button>
   </footer>
@@ -560,6 +593,11 @@ function render() {
   $("install").disabled = !s || !!busy;
   $("verify").disabled = !s || !!busy || !installed;
   $("verify").parentElement.hidden = !installed; // nothing to update or verify before the first install
+  for (const id of ["folderEdit", "pathEdit", "folderBrowse", "folderUse"]) $(id).disabled = !s || !!busy || picking;
+  // Before the first install the folder line sits above the button, where the choice matters; after, it's in the
+  // footer, unless it's being changed or has news.
+  $("where").hidden = !s || !(!installed || folderEditing || !$("folderNote").hidden);
+  $("folderLabel").textContent = installed ? "Installed in" : "Installs to";
 
   $("progress").hidden = !busy;
   $("latest").hidden = !busy;
@@ -620,17 +658,23 @@ async function refresh() {
     $("version").textContent = s.version ? "Build " + s.version : "";
     $("path").textContent = s.dir;
     $("path").title = s.dir;
+    $("folderShown").textContent = s.dir;
+    $("folderShown").title = s.dir;
+    $("folderBrowse").hidden = !s.can_pick;
     if (!filled && s.realm) {
       filled = true;
       if (s.realm.supported) {
         realmSupported = true;
         $("loginHost").value = s.realm.login_host || "";
         $("email").value = s.realm.email || "";
+        $("rememberRow").hidden = !s.realm.can_remember;
+        $("remember").checked = !!s.realm.password_saved;
         showHost(!s.realm.login_host);
       } else {
         realmSupported = false;
       }
     }
+    if (s.realm) showSaved(s.realm);
     // The sign-in shows once there's a client to sign in with.
     $("realm").hidden = !(realmSupported && s.installed);
     $("macNote").hidden = !(realmSupported === false && s.installed);
@@ -647,17 +691,83 @@ function showHost(editing) {
 }
 $("hostEdit").onclick = () => { showHost(true); $("loginHost").focus(); };
 
+// A remembered password stays with the launcher: the field shows that one is kept and, left empty, Play uses it.
+// Changing the server or email means a different account, so the field asks for its password again.
+let savedFor = null;
+const account = (host, email) => host.trim().toLowerCase() + " " + email.trim().toLowerCase();
+function markSaved() {
+  $("password").placeholder = savedFor && account($("loginHost").value, $("email").value) === savedFor ? "Remembered" : "";
+}
+function showSaved(r) {
+  savedFor = r.password_saved ? account(r.login_host || "", r.email || "") : null;
+  markSaved();
+}
+for (const id of ["loginHost", "email"]) $(id).addEventListener("input", markSaved);
+
+// ------------------------------------------------------------------ install folder
+// Change opens the folder editor: Browse asks the system's own folder dialog, or a path can be typed. Nothing is
+// moved; a folder that already holds the game is used as it is, and anywhere else Install downloads it there.
+let folderEditing = false, picking = false;
+function editFolder(open) {
+  folderEditing = open;
+  $("folderEditor").hidden = !open;
+  $("folderLine").hidden = open;
+  if (open) {
+    $("folderInput").value = state ? state.dir : "";
+    folderNote("");
+    $("folderInput").focus();
+    $("folderInput").select();
+  }
+  render();
+}
+function folderNote(text, kind) {
+  const n = $("folderNote");
+  n.textContent = text;
+  n.className = "hint" + (kind ? " " + kind : "");
+  n.hidden = !text;
+}
+async function setFolder(body) {
+  picking = true;
+  render();
+  try {
+    const res = await fetch("folder", { method: "POST", headers: { "Content-Type": "application/json" },
+                                         body: JSON.stringify(body) });
+    if (!res.ok) { folderNote((await res.text()).trim(), "err"); return; }
+    const r = await res.json();
+    if (r.cancelled) return;
+    editFolder(false);
+    folderNote(r.note || "The launcher now uses " + r.dir + ".", r.note ? "" : "ok");
+    await refresh();
+  } catch (e) {
+    folderNote("The launcher didn't answer.", "err");
+  } finally {
+    picking = false;
+    render();
+  }
+}
+$("folderEdit").onclick = $("pathEdit").onclick = () => editFolder(true);
+$("folderCancel").onclick = () => { editFolder(false); folderNote(""); render(); };
+$("folderBrowse").onclick = () => setFolder({ browse: true });
+$("folderUse").onclick = () => setFolder({ dir: $("folderInput").value.trim() });
+$("folderInput").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !$("folderUse").disabled) $("folderUse").click();
+  if (e.key === "Escape") { e.stopPropagation(); $("folderCancel").click(); }
+});
+
 async function run(name) {
   if (busy) return;
   const opts = { method: "POST" };
   if (name === "play") {
     opts.headers = { "Content-Type": "application/json" };
     opts.body = JSON.stringify({ login_host: $("loginHost").value.trim(), email: $("email").value.trim(),
-                                 password: $("password").value });
+                                 password: $("password").value, remember: $("remember").checked });
+    $("password").value = ""; // not kept in the page once sent
   }
   clearLog();
   resetProgress();
   lastJobFailed = false;
+  folderNote("");
+  if (folderEditing) editFolder(false);
   const res = await fetch("run?name=" + name, opts);
   if (!res.ok) { addLine("error: " + (await res.text()).trim()); openLog(true); return; }
   busy = name;

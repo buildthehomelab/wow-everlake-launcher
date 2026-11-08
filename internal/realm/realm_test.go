@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,11 @@ func fakeLoginServer(t *testing.T) *httptest.Server {
 		in := map[string]string{}
 		for _, i := range body.Inputs {
 			in[i.ID] = i.Value
+		}
+		if in["account_name"] == "proxy@example.com" { // the login server is down behind its proxy
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("<html>502 Bad Gateway</html>"))
+			return
 		}
 		if in["account_name"] == "player@example.com" && in["password"] == "secret" {
 			json.NewEncoder(w).Encode(map[string]any{"authentication_state": "DONE", "login_ticket": "TC-first"})
@@ -75,8 +81,13 @@ func TestSignIn(t *testing.T) {
 		t.Errorf("login: %+v", l)
 	}
 	if _, err := SignIn(context.Background(), s, ts.Client(), "player@example.com", "wrong"); err == nil ||
-		!strings.Contains(err.Error(), "LOGIN") {
+		!strings.Contains(err.Error(), "LOGIN") || !errors.Is(err, ErrRefused) {
 		t.Errorf("wrong password: %v", err)
+	}
+	// A proxy's error page is not a refusal: a remembered password must survive the login server restarting.
+	if _, err := SignIn(context.Background(), s, ts.Client(), "proxy@example.com", "secret"); err == nil ||
+		errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "502") {
+		t.Errorf("login server down: %v", err)
 	}
 	// The system's CAs don't trust the test server: the default client refuses it.
 	if _, err := SignIn(context.Background(), s, nil, "player@example.com", "secret"); err == nil {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,22 +21,35 @@ import (
 //go:embed page.html
 var files embed.FS
 
-// Actions are the launcher jobs the page triggers. Each gets a log function to stream lines to the page; lines
-// logged after a job ends (the running game's patches) still reach the page. Play gets what the player typed. They
-// are injected so the package needs no network of its own and can be tested with fakes.
+// Actions are the launcher jobs the page triggers. Each gets the install folder as it was when the job started and
+// a log function to stream lines to the page; lines logged after a job ends (the running game's patches) still
+// reach the page. Play gets what the player typed. They are injected so the package needs no network of its own and
+// can be tested with fakes.
 type Actions struct {
-	Install func(ctx context.Context, log func(string)) error
-	Verify  func(ctx context.Context, log func(string)) error
-	Play    func(ctx context.Context, in PlayInput, log func(string)) error
-	// Realm reports the saved realm settings, to fill in the page's sign-in fields.
-	Realm func() RealmStatus
+	Install func(ctx context.Context, dir string, log func(string)) error
+	Verify  func(ctx context.Context, dir string, log func(string)) error
+	Play    func(ctx context.Context, dir string, in PlayInput, log func(string)) error
+	// Realm reports the realm settings saved in an install folder, to fill in the page's sign-in fields.
+	Realm func(dir string) RealmStatus
+
+	// PickFolder shows the system's folder dialog, opened at start, and reports cancelled when the player closes it
+	// without picking. Nil means there's no dialog and the page can only take a typed path.
+	PickFolder func(start string) (picked string, cancelled bool, err error)
+	// UseFolder turns a picked or typed folder into the install folder (see settings.ChooseInstallDir); inside
+	// reports that it made a folder inside the one picked. SaveFolder keeps the choice for next time, once the
+	// launcher has moved to it.
+	UseFolder  func(picked string) (dir string, inside bool, err error)
+	SaveFolder func(dir string) error
+	// Installed reports whether a folder holds a finished install; nil means install.ReadState.
+	Installed func(dir string) bool
 }
 
 // PlayInput is the sign-in the page sends with Play. An empty LoginHost starts the game without joining a realm.
 type PlayInput struct {
 	LoginHost string `json:"login_host"`
 	Email     string `json:"email"`
-	Password  string `json:"password"`
+	Password  string `json:"password"` // empty: use the remembered one
+	Remember  bool   `json:"remember"` // keep the password once it signs in; false forgets a remembered one
 }
 
 // RealmStatus is what the page shows about joining a realm.
@@ -43,6 +57,10 @@ type RealmStatus struct {
 	LoginHost string `json:"login_host"`
 	Email     string `json:"email"`
 	Supported bool   `json:"supported"` // false where the launcher can't join a realm (macOS for now)
+	// CanRemember: a password can be remembered here. PasswordSaved: one is, for LoginHost and Email. The password
+	// itself never goes to the page.
+	CanRemember   bool `json:"can_remember"`
+	PasswordSaved bool `json:"password_saved"`
 }
 
 // Server is the launcher's local page.
@@ -60,7 +78,7 @@ type Server struct {
 	lastSeen time.Time // when the last page stopped listening (or the server started)
 }
 
-// New makes a server for one install folder.
+// New makes a server, starting on one install folder; the page can move it to another (POST /folder).
 func New(dir, version string, act Actions) *Server {
 	return &Server{dir: dir, version: version, act: act, subs: map[chan string]struct{}{}, lastSeen: time.Now()}
 }
@@ -84,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.status)
 	mux.HandleFunc("/run", s.run)
 	mux.HandleFunc("/events", s.events)
+	mux.HandleFunc("/folder", s.folder)
 	return localOnly(mux)
 }
 
@@ -120,6 +139,7 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 
 type statusResp struct {
 	Dir       string      `json:"dir"`
+	CanPick   bool        `json:"can_pick"` // the page may offer the system's folder dialog
 	Version   string      `json:"version"`
 	Installed bool        `json:"installed"`
 	Busy      string      `json:"busy"`
@@ -135,16 +155,17 @@ type statusResp struct {
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	var resp statusResp
-	resp.Dir, resp.Version = s.dir, s.version
 	s.mu.Lock()
-	resp.Busy = s.busy
+	resp.Dir, resp.Busy = s.dir, s.busy
 	s.mu.Unlock()
+	resp.Version = s.version
+	resp.CanPick = s.act.PickFolder != nil
 	if s.act.Realm != nil {
-		resp.Realm = s.act.Realm()
+		resp.Realm = s.act.Realm(resp.Dir)
 	}
-	if _, err := install.ReadState(s.dir); err == nil {
+	if _, err := install.ReadState(resp.Dir); err == nil {
 		resp.Installed = true
-		if rep, err := install.QuickVerify(s.dir); err == nil {
+		if rep, err := install.QuickVerify(resp.Dir); err == nil {
 			resp.Quick.Checked = true
 			resp.Quick.OK = !rep.Failed()
 			resp.Quick.Changed, resp.Quick.Missing = len(rep.Bad), len(rep.Missing)
@@ -185,6 +206,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.busy = name
+	dir := s.dir
 	s.mu.Unlock()
 
 	s.submu.Lock()
@@ -193,7 +215,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	s.broadcast(fmt.Sprintf("--- %s ---", name))
 
 	go func() {
-		err := s.do(name, in)
+		err := s.do(name, dir, in)
 		if err != nil {
 			s.broadcast("error: " + err.Error())
 		}
@@ -205,26 +227,133 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) do(name string, in PlayInput) error {
+func (s *Server) do(name, dir string, in PlayInput) error {
 	ctx := context.Background()
 	switch name {
 	case "install":
 		if s.act.Install == nil {
 			return fmt.Errorf("install isn't available")
 		}
-		return s.act.Install(ctx, s.broadcast)
+		return s.act.Install(ctx, dir, s.broadcast)
 	case "verify":
 		if s.act.Verify == nil {
 			return fmt.Errorf("verify isn't available")
 		}
-		return s.act.Verify(ctx, s.broadcast)
+		return s.act.Verify(ctx, dir, s.broadcast)
 	case "play":
 		if s.act.Play == nil {
 			return fmt.Errorf("play isn't available")
 		}
-		return s.act.Play(ctx, in, s.broadcast)
+		return s.act.Play(ctx, dir, in, s.broadcast)
 	}
 	return nil
+}
+
+// folderReq is a change of install folder: a typed path, or Browse to ask the system's folder dialog.
+type folderReq struct {
+	Dir    string `json:"dir"`
+	Browse bool   `json:"browse"`
+}
+
+type folderResp struct {
+	Dir       string `json:"dir"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// folder moves the launcher to another install folder. Nothing is copied: a folder that already holds the game is
+// used as it is, and anywhere else the next Install downloads it there.
+func (s *Server) folder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "folder takes application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	var req folderReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.act.UseFolder == nil {
+		http.Error(w, "the install folder can't be changed here", http.StatusNotImplemented)
+		return
+	}
+	s.mu.Lock()
+	old, busy := s.dir, s.busy
+	s.mu.Unlock()
+	if busy != "" {
+		http.Error(w, "wait for "+busy+" to finish before changing the folder", http.StatusConflict)
+		return
+	}
+	picked := strings.TrimSpace(req.Dir)
+	if req.Browse {
+		if s.act.PickFolder == nil {
+			http.Error(w, "no folder dialog here; type the folder instead", http.StatusNotImplemented)
+			return
+		}
+		p, cancelled, err := s.act.PickFolder(old)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if cancelled {
+			writeJSON(w, folderResp{Dir: old, Cancelled: true})
+			return
+		}
+		picked = p
+	}
+	// The current folder picked again stays as it is, even half downloaded (its install record is written last).
+	if picked != "" && filepath.Clean(picked) == filepath.Clean(old) {
+		writeJSON(w, folderResp{Dir: old})
+		return
+	}
+	dir, inside, err := s.act.UseFolder(picked)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if s.busy != "" { // a job started while the dialog was open
+		busy := s.busy
+		s.mu.Unlock()
+		http.Error(w, "wait for "+busy+" to finish before changing the folder", http.StatusConflict)
+		return
+	}
+	s.dir = dir
+	s.mu.Unlock()
+
+	resp := folderResp{Dir: dir}
+	if s.act.SaveFolder != nil {
+		if err := s.act.SaveFolder(dir); err != nil {
+			resp.Note = "The launcher uses this folder now, but couldn't save it for next time: " + err.Error() + "."
+		}
+	}
+	installed := s.act.Installed
+	if installed == nil {
+		installed = func(d string) bool { _, err := install.ReadState(d); return err == nil }
+	}
+	note := ""
+	switch {
+	case installed(dir):
+		note = "Found the game already installed here."
+	case inside:
+		note = "That folder has other things in it, so the game goes in its own folder inside it."
+	}
+	if note != "" {
+		resp.Note = strings.TrimSpace(note + " " + resp.Note)
+	}
+	if dir != old && installed(old) && !installed(dir) {
+		if resp.Note != "" {
+			resp.Note += " "
+		}
+		resp.Note += "The copy in " + old + " stays where it is: move its contents here to keep it, or Install " +
+			"downloads the game again (delete the old folder afterwards to free the space)."
+	}
+	s.broadcast("install folder: " + dir)
+	writeJSON(w, resp)
 }
 
 // events streams log lines as Server-Sent Events: the job's lines so far, then each new one.
