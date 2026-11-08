@@ -68,7 +68,8 @@ and the launcher's output live. On Windows the page also has the sign-in fields:
 
 `--tags` picks platform, architecture, locale and region (default: this machine, `enUS`, `US`). The region matters:
 the Mac game binary for CN differs from everyone else's. `--max-priority` and `--data-limit-mb` cut the data stage
-short for trial runs.
+short for trial runs. `--cdn host[:port],...` tries those hosts first and Blizzard's after them (our mirror,
+below); a host may name its scheme, e.g. `--cdn https://everlake.example.com` for a mirror behind a TLS proxy.
 
 ## Joining a realm
 
@@ -94,6 +95,26 @@ short for trial runs.
 The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password never is.
 The patching follows jibay442/forever_docker (key store) and Arctium's launcher (login name); `wow-project-everlake`'s
 `client/macos/keypatch.c` does the same from inside the game on macOS.
+
+## The mirror (our own CDN)
+
+`mirror` runs on the server and answers like Blizzard's CDN, so a launcher keeps installing when Blizzard's CDN is
+down or slow (design and later steps: [docs/cdn-and-peers.md](docs/cdn-and-peers.md)).
+
+```sh
+./everlake-launcher mirror --store /srv/cdn --prefetch               # serve on :8087, fetch the pinned build in the background
+./everlake-launcher mirror --store /srv/cdn --plan-only              # how much the prefetch would fetch (88.3 GB for 70790)
+./everlake-launcher install --dir ~/Everlake --cdn server:8087       # a launcher using it
+```
+
+- Every request is answered from `--overlay` (our own patched builds, served as they are), else the store, else
+  Blizzard. What it gets from Blizzard is checked like an install checks it before it's kept or served, and what's in
+  the store is checked again each time it's served, so a damaged copy is fetched again instead of handed out.
+- Archives are kept by range (a sparse file plus a `.have` list of the ranges in it). The prefetch reads them in the
+  launcher's own ranges, merged over Mac and Windows, so every range a launcher asks for is in the store.
+- `--rate-mb` (default 40) caps the prefetch, `--memory-mb` (default 1024) the archive bytes held in memory at once.
+  The mirror never forces writes to disk.
+- The Everlake portal's compose file runs it as its `cdn` service (from this repo's `Dockerfile`).
 
 ## How it checks files
 
