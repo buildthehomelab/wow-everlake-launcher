@@ -5,143 +5,718 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Everlake launcher</title>
 <style>
-  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f23; --muted:#6b7280; --card:#fff; --line:#e5e7eb;
-          --accent:#3b5bdb; --ok:#2f9e44; --bad:#e03131; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#16181d; --fg:#e8eaed; --muted:#9aa0a6; --card:#20242b;
-          --line:#2d333b; --accent:#5c7cfa; } }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
-  .wrap { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
-  h1 { font-size:20px; margin:0 0 2px; }
-  .sub { color:var(--muted); font-size:13px; margin-bottom:20px; word-break:break-all; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
-  .status { display:flex; align-items:center; gap:10px; font-weight:600; }
-  .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none; }
-  .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
-  .note { color:var(--muted); font-weight:400; font-size:13px; margin-top:6px; }
-  .buttons { display:flex; gap:10px; flex-wrap:wrap; }
-  button { font:inherit; font-weight:600; padding:10px 16px; border-radius:8px; border:1px solid var(--line);
-           background:var(--card); color:var(--fg); cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button:disabled { opacity:.5; cursor:default; }
-  .fields { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-bottom:12px; }
-  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
-  input { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px;
-          padding:8px 10px; min-width:0; }
-  pre { background:#0b0d10; color:#d6deeb; border-radius:8px; padding:12px; overflow:auto; margin:0;
-        height:clamp(160px, calc(100vh - 545px), 600px); /* fills the launcher's window without scrolling it */
-        font:12px/1.5 ui-monospace, monospace; white-space:pre-wrap; word-break:break-word; }
-  @media (prefers-color-scheme: light) { pre { background:#0d1117; } }
+/* The Everlake portal's look, after the Forever class banners: a flat dark field, one strong colour (a school of
+   magic) per launch, one cel-shaded burst of magic on the right, and flat UI with ink lines. No shadows, gloss or
+   blur on the UI itself. Everything is drawn here; the page loads nothing from the network. */
+:root {
+  --ink: #0a0912;
+  --text: #f2f0f7;
+  --muted: rgba(242, 240, 247, .62);
+  --faint: rgba(242, 240, 247, .1);
+  --field: rgba(0, 0, 0, .28);
+  --ok: #9ff0a8;
+  --error: #ffab9b;
+  --display: "Avenir Next Condensed", "Bahnschrift SemiCondensed", "Bahnschrift", "Arial Narrow", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+/* A school of magic: field colour, then four cel steps from the dark rim to the white core, and the bloom. */
+[data-school="fel"]    { --bg: #0e1024; --c0: #24135e; --c1: #4b3cf0; --c2: #8f9bff; --c3: #eef0ff; --bloom: rgba(90, 80, 255, .38); }
+[data-school="fire"]   { --bg: #130d17; --c0: #6e1408; --c1: #f0531c; --c2: #ffb53b; --c3: #fff4d6; --bloom: rgba(255, 110, 40, .32); }
+[data-school="holy"]   { --bg: #43303a; --c0: #8b4a0e; --c1: #f29b2e; --c2: #ffd970; --c3: #fffbe9; --bloom: rgba(255, 190, 90, .36); }
+[data-school="nature"] { --bg: #3a2732; --c0: #165a2c; --c1: #3fbf5c; --c2: #a9f08a; --c3: #f3ffe4; --bloom: rgba(110, 230, 120, .3); }
+[data-school="frost"]  { --bg: #0b1526; --c0: #0f3a78; --c1: #2f8cf2; --c2: #9fdcff; --c3: #f1fbff; --bloom: rgba(80, 170, 255, .34); }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: radial-gradient(ellipse 70% 90% at 82% 52%, color-mix(in srgb, var(--bg), white 6%), var(--bg) 70%);
+  background-color: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+input, .log, .path { user-select: text; -webkit-user-select: text; }
+
+/* ---------------------------------------------------------------- the burst */
+
+.spell {
+  position: fixed;
+  right: -10vw;
+  top: 50%;
+  width: min(104vh, 68vw);
+  aspect-ratio: 1;
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 0;
+}
+.spell::before {
+  content: "";
+  position: absolute;
+  inset: -15%;
+  background: radial-gradient(circle at 50% 58%, var(--bloom), transparent 58%);
+  transition: opacity .6s;
+}
+.spell svg { position: relative; width: 100%; height: 100%; overflow: visible; }
+.spell .frame { display: none; }
+.spell .frame.on { display: inline; }
+.spell .halo { fill: var(--c1); opacity: .85; }
+.spell .k1 { fill: var(--c1); }
+.spell .k2 { fill: var(--c2); }
+.spell .k3 { fill: var(--c3); }
+/* Not installed yet: the glow is banked low. */
+body.cold .spell::before { opacity: .45; }
+
+/* ---------------------------------------------------------------- the panel */
+
+.panel {
+  position: relative;
+  z-index: 1;
+  min-height: 100%;
+  width: min(100%, 470px);
+  padding: 40px 44px 22px;
+  display: flex;
+  flex-direction: column;
+}
+
+.tag {
+  align-self: flex-start;
+  display: inline-block;
+  padding: 3px 14px 2px;
+  background: var(--c1);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  font: 700 12px/1.4 var(--display);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  transform: skewX(-14deg);
+}
+.tag span { display: inline-block; transform: skewX(14deg); }
+
+h1 {
+  margin: 10px 0 0;
+  font: 800 76px/.9 var(--display);
+  font-stretch: condensed;
+  letter-spacing: -.015em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+/* The title's flat brush stroke: one slanted block of the school's colour under the word. */
+h1::after {
+  content: "";
+  display: block;
+  width: 96px;
+  height: 8px;
+  margin-top: 8px;
+  background: var(--c1);
+  border: 2px solid var(--ink);
+  transform: skewX(-24deg);
+  transform-origin: left;
+}
+
+.version { margin: 10px 0 0; color: var(--muted); font-size: 13px; letter-spacing: .02em; }
+
+/* ---------------------------------------------------------------- status */
+
+.status { margin-top: 30px; display: grid; grid-template-columns: 22px 1fr; column-gap: 10px; align-items: start; }
+.glint { width: 22px; height: 22px; margin-top: 2px; }
+.glint path { fill: var(--muted); }
+.status.ok .glint path { fill: var(--ok); }
+.status.bad .glint path { fill: var(--error); }
+.status.run .glint path { fill: var(--c2); }
+.status.run .glint { animation: spin 1.6s steps(8) infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status-text { font: 700 22px/1.2 var(--display); letter-spacing: .01em; }
+.status-note { grid-column: 2; color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+.progress { grid-column: 2; margin-top: 12px; }
+.bar {
+  position: relative;
+  height: 12px;
+  background: var(--field);
+  border: 2px solid var(--faint);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--c1);
+  border-right: 3px solid var(--c3);
+  transition: width .5s;
+}
+/* No numbers yet: hatched stripes that step along, drawn on twos like the burst. */
+.bar.unknown .fill {
+  width: 100%;
+  border-right: 0;
+  background: repeating-linear-gradient(-55deg, var(--c1) 0 10px, var(--c0) 10px 20px);
+  background-size: 200% 100%;
+  animation: hatch .9s steps(6) infinite;
+}
+@keyframes hatch { to { background-position: -24.4px 0; } }
+.progress-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.progress-row b { color: var(--c2); font-weight: 700; }
+.latest {
+  grid-column: 2;
+  margin-top: 4px;
+  font: 12px/1.4 var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- sign-in */
+
+.realm { margin-top: 26px; display: grid; gap: 12px; }
+.realm-line { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--muted); min-width: 0; }
+.realm-line strong { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); min-width: 0; }
+input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border-radius: 3px;
+  border: 2px solid var(--faint);
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+input::placeholder { color: rgba(242, 240, 247, .3); }
+input:focus { outline: none; border-color: var(--c2); }
+.hint { font-size: 12px; color: var(--muted); margin: 0; }
+
+/* ---------------------------------------------------------------- buttons */
+
+.actions { margin-top: 24px; display: grid; gap: 10px; }
+button { font: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--c3); outline-offset: 3px; }
+button:disabled { cursor: default; }
+
+.play {
+  position: relative;
+  width: 100%;
+  padding: 14px 20px 12px;
+  border: 3px solid var(--ink);
+  border-radius: 3px;
+  background: var(--c1);
+  color: var(--ink);
+  font: 800 34px/1 var(--display);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  overflow: hidden;
+}
+/* A sharp cel highlight across the top-left corner; it sweeps across on hover, in two hard steps. */
+.play::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: -30%;
+  width: 22%;
+  background: var(--c3);
+  opacity: .28;
+  transform: skewX(-24deg);
+  transition: left .25s steps(3);
+}
+.play:hover:not(:disabled) { background: var(--c2); }
+.play:hover:not(:disabled)::before { left: 110%; }
+.play:active:not(:disabled) { transform: translateY(1px); }
+.play:disabled { background: var(--c0); background: color-mix(in srgb, var(--c1) 35%, var(--bg)); color: rgba(10, 9, 18, .7); }
+.play:disabled::before { display: none; }
+
+.minor { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ghost {
+  padding: 8px 12px;
+  border: 2px solid var(--faint);
+  border-radius: 3px;
+  background: var(--field);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+.ghost:hover:not(:disabled) { border-color: var(--c2); color: var(--c3); }
+.ghost:disabled { color: rgba(242, 240, 247, .35); }
+
+/* ---------------------------------------------------------------- footer */
+
+.foot {
+  margin-top: auto;
+  padding-top: 26px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.schools { display: flex; gap: 6px; }
+.schools button {
+  width: 14px; height: 14px; padding: 0;
+  border: 2px solid var(--ink);
+  transform: rotate(45deg) scale(.8);
+  opacity: .6;
+}
+.schools button[aria-pressed="true"] { opacity: 1; transform: rotate(45deg) scale(1); outline: 2px solid var(--text); outline-offset: 1px; }
+.schools button:hover { opacity: 1; }
+.linkish { background: none; border: 0; padding: 0; color: var(--c2); font-size: 12px; font-weight: 600; }
+.linkish:hover { color: var(--c3); }
+
+/* ---------------------------------------------------------------- the log drawer */
+
+.drawer {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 5;
+  height: min(52vh, 380px);
+  display: flex;
+  flex-direction: column;
+  background: var(--ink); /* before color-mix (Safari 16.2) */
+  background: color-mix(in srgb, var(--bg) 35%, var(--ink));
+  border-top: 3px solid var(--c1);
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform .22s ease-out, visibility 0s .22s;
+}
+.drawer.open { transform: none; visibility: visible; transition: transform .22s ease-out; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; }
+.drawer-head span { font: 700 13px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--c2); }
+.log {
+  flex: 1;
+  margin: 0;
+  padding: 4px 16px 16px;
+  overflow: auto;
+  font: 12px/1.55 var(--mono);
+  color: #d6deeb;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log .err { color: var(--error); }
+.log .head { color: var(--c2); }
+.log .end { color: var(--muted); }
+
+[hidden] { display: none !important; }
+
+/* Narrow or short windows: the burst sits behind the panel, dimmed, and the title shrinks. */
+@media (max-width: 720px) {
+  .spell { right: -34vw; width: 110vw; opacity: .26; }
+  .panel { width: 100%; max-width: 520px; padding: 28px 22px 16px; }
+}
+@media (max-height: 640px) {
+  .panel { padding-top: 24px; }
+  h1 { font-size: 56px; }
+  .status { margin-top: 18px; }
+  .realm, .actions { margin-top: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status.run .glint, .bar.unknown .fill { animation: none; }
+  .play::before { transition: none; }
+}
 </style>
 </head>
-<body>
-<div class="wrap">
-  <h1>Everlake launcher</h1>
-  <div class="sub" id="sub">—</div>
+<body data-school="fire">
+<div class="spell" aria-hidden="true"></div>
 
-  <div class="card">
-    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Checking…</span></div>
-    <div class="note" id="statusNote"></div>
-  </div>
+<main class="panel">
+  <div class="tag"><span>WoW Forever</span></div>
+  <h1>Everlake</h1>
+  <p class="version" id="version">&nbsp;</p>
 
-  <div class="card" id="realmCard">
-    <div class="fields">
-      <label>Login server<input id="loginHost" placeholder="login.realm.example.com" autocomplete="off"></label>
-      <label>Email<input id="email" type="email" autocomplete="username"></label>
+  <section class="status" id="status" aria-live="polite">
+    <svg class="glint" viewBox="-12 -12 24 24" aria-hidden="true">
+      <path d="M0 -11 Q0 0 7 0 Q0 0 0 11 Q0 0 -7 0 Q0 0 0 -11 Z"/>
+    </svg>
+    <div class="status-text" id="statusText">Checking…</div>
+    <div class="status-note" id="statusNote"></div>
+    <div class="progress" id="progress" hidden>
+      <div class="bar unknown" id="bar"><div class="fill" id="fill"></div></div>
+      <div class="progress-row"><span id="progLeft"></span><span id="progRight"></span></div>
+    </div>
+    <div class="latest" id="latest" hidden></div>
+  </section>
+
+  <section class="realm" id="realm" hidden>
+    <div class="realm-line" id="hostLine" hidden>
+      Realm <strong id="hostShown"></strong> <button class="linkish" id="hostEdit" type="button">Change</button>
+    </div>
+    <label id="hostField">Login server<input id="loginHost" placeholder="login.realm.example.com" autocomplete="off"
+      spellcheck="false"></label>
+    <div class="pair">
+      <label>Email<input id="email" type="email" autocomplete="username" spellcheck="false"></label>
       <label>Password<input id="password" type="password" autocomplete="current-password"></label>
     </div>
-    <div class="note" id="realmNote">Play signs in and joins the realm. Leave the login server empty to start the game
-      on its own.</div>
+    <p class="hint" id="realmNote">Leave the login server empty to start the game without joining a realm.</p>
+  </section>
+  <p class="hint" id="macNote" hidden>On macOS, Play starts the game on its own; joining a realm from the launcher
+    works on Windows for now.</p>
+
+  <div class="actions">
+    <button class="play" id="play" type="button" disabled>Play</button>
+    <div class="minor">
+      <button class="ghost" id="install" type="button">Update</button>
+      <button class="ghost" id="verify" type="button">Verify files</button>
+    </div>
   </div>
 
-  <div class="card buttons">
-    <button class="primary" id="play">Play</button>
-    <button id="install">Install / update</button>
-    <button id="verify">Verify</button>
-  </div>
+  <footer class="foot">
+    <span class="path" id="path"></span>
+    <div class="schools" id="schools" role="group" aria-label="Colour"></div>
+    <button class="linkish" id="logToggle" type="button" aria-expanded="false">Log</button>
+  </footer>
+</main>
 
-  <div class="card">
-    <pre id="log">The launcher's output appears here.</pre>
-  </div>
-</div>
+<section class="drawer" id="drawer" aria-label="Launcher log">
+  <div class="drawer-head"><span>Log</span><button class="linkish" id="logClose" type="button">Close</button></div>
+  <pre class="log" id="log"></pre>
+</section>
 
 <script>
-  const $ = id => document.getElementById(id);
-  const log = $("log");
-  let busy = false;
-  let filled = false;
+// ------------------------------------------------------------------ colour
+// One school of magic per launch, as each class banner has its own colour. A picked one is kept where the page's
+// storage allows it; ?school= picks one, as on the portal.
+const SCHOOLS = { fel: "#4b3cf0", fire: "#f0531c", holy: "#f29b2e", nature: "#3fbf5c", frost: "#2f8cf2" };
+let school = new URLSearchParams(location.search).get("school");
+if (!SCHOOLS[school]) {
+  try { school = localStorage.getItem("everlake.school"); } catch (e) { /* no storage */ }
+}
+if (!SCHOOLS[school]) {
+  const names = Object.keys(SCHOOLS);
+  school = names[Math.floor(Math.random() * names.length)];
+}
+document.body.dataset.school = school;
+(function swatches() {
+  const host = document.getElementById("schools");
+  for (const [name, colour] of Object.entries(SCHOOLS)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.title = name[0].toUpperCase() + name.slice(1);
+    b.setAttribute("aria-label", b.title);
+    b.style.background = colour;
+    b.setAttribute("aria-pressed", String(name === school));
+    b.onclick = () => {
+      school = name;
+      document.body.dataset.school = name;
+      for (const o of host.children) o.setAttribute("aria-pressed", String(o === b));
+      try { localStorage.setItem("everlake.school", name); } catch (e) { /* no storage */ }
+    };
+    host.appendChild(b);
+  }
+})();
 
-  function setButtons() {
-    for (const id of ["play", "install", "verify"]) $(id).disabled = busy;
+// ------------------------------------------------------------------ the burst
+// The portal's art: a ball of magic drawn the way cel-shaded animation draws effects. Hard-edged colour steps from
+// a saturated rim to a white-hot core, a soft glow, and sharp flame tongues streaming one way. It "boils" between
+// three drawn frames at 8 drawings a second, and faster while the launcher works.
+const spell = (function () {
+  const host = document.querySelector(".spell");
+  const NS = "http://www.w3.org/2000/svg";
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const TRAIL = -Math.PI / 3; // the flames stream up and to the right
+
+  function rng(seed) {
+    return function () { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  }
+  function node(name, attrs) {
+    const e = document.createElementNS(NS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function turn(from, to) {
+    let d = to - from;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  }
+  // A ball ringed with flame tongues: round valleys, sharp tips. Tongues facing the trail grow long and the rest
+  // bend toward it, so the whole shape streams one way.
+  function flame(r, cx, cy, radius, tongues, reach) {
+    const pts = [], step = Math.PI * 2 / tongues, start = r() * step;
+    for (let i = 0; i < tongues; i++) {
+      const a = start + i * step + (r() - 0.5) * step * 0.25, mid = a + step / 2;
+      let align = Math.max(0, Math.cos(mid - TRAIL));
+      align *= align;
+      const vr = radius * (0.9 + r() * 0.12);
+      const tr = radius * (1 + reach * (0.1 + r() * 0.25 + align * (1.5 + r() * 1.1)));
+      const ta = mid + turn(mid, TRAIL) * (0.3 + 0.35 * (1 - align)) * Math.min(1, tr / radius - 1);
+      pts.push([cx + Math.cos(a) * vr, cy + Math.sin(a) * vr]);
+      pts.push([cx + Math.cos(ta) * tr, cy + Math.sin(ta) * tr]);
+    }
+    let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+    for (let j = 0; j < pts.length; j += 2) {
+      const v = pts[j], t = pts[j + 1], nv = pts[(j + 2) % pts.length];
+      const c1 = [(v[0] + t[0]) / 2 + (t[1] - v[1]) * 0.22, (v[1] + t[1]) / 2 - (t[0] - v[0]) * 0.22];
+      const c2 = [(t[0] + nv[0]) / 2 + (nv[1] - t[1]) * 0.12, (t[1] + nv[1]) / 2 - (nv[0] - t[0]) * 0.12];
+      d += " Q" + c1[0].toFixed(1) + " " + c1[1].toFixed(1) + " " + t[0].toFixed(1) + " " + t[1].toFixed(1);
+      d += " Q" + c2[0].toFixed(1) + " " + c2[1].toFixed(1) + " " + nv[0].toFixed(1) + " " + nv[1].toFixed(1);
+    }
+    return d + " Z";
+  }
+  // Embers thrown off along the trail: sharp four-point glints.
+  function embers(g, r, cx, cy) {
+    for (let i = 0; i < 11; i++) {
+      const a = TRAIL + (r() - 0.5) * 1.9, dist = 220 + r() * 190, s = 4 + r() * 9;
+      const x = cx + Math.cos(a) * dist, y = cy + Math.sin(a) * dist;
+      g.appendChild(node("path", {
+        "class": i % 3 ? "k2" : "k3",
+        d: "M" + x + " " + (y - s * 1.6) + " Q" + x + " " + y + " " + (x + s) + " " + y + " Q" + x + " " + y + " " + x +
+          " " + (y + s * 1.6) + " Q" + x + " " + y + " " + (x - s) + " " + y + " Q" + x + " " + y + " " + x + " " +
+          (y - s * 1.6) + " Z"
+      }));
+    }
   }
 
-  async function refresh() {
-    try {
-      const s = await (await fetch("status")).json();
-      $("sub").textContent = (s.version ? "WoW Forever " + s.version + " — " : "") + s.dir;
-      busy = !!s.busy;
-      setButtons();
-      if (!filled && s.realm) {
-        filled = true;
+  const svg = node("svg", { viewBox: "0 0 800 800", preserveAspectRatio: "xMidYMid meet" });
+  const defs = node("defs", {});
+  const glow = node("filter", { id: "glow", x: "-50%", y: "-50%", width: "200%", height: "200%" });
+  glow.appendChild(node("feGaussianBlur", { stdDeviation: "26" }));
+  defs.appendChild(glow);
+  svg.appendChild(defs);
+
+  const cx = 360, cy = 470, frames = [];
+  for (let f = 0; f < 3; f++) {
+    const r = rng(4021 + f * 977);
+    const g = node("g", { "class": "frame" });
+    const outer = flame(r, cx, cy, 150, 12, 1.0);
+    g.appendChild(node("path", { "class": "halo", d: outer, filter: "url(#glow)" }));
+    g.appendChild(node("path", { "class": "k1", d: outer }));
+    g.appendChild(node("path", { "class": "k2", d: flame(r, cx - 6, cy + 6, 112, 10, 0.85) }));
+    g.appendChild(node("path", { "class": "k3", d: flame(r, cx - 12, cy + 12, 70, 9, 0.6) }));
+    embers(g, r, cx, cy);
+    svg.appendChild(g);
+    frames.push(g);
+  }
+  host.appendChild(svg);
+
+  let i = 0, timer = null;
+  frames[0].classList.add("on");
+  function pace(ms) {
+    if (still) return;
+    clearInterval(timer);
+    timer = setInterval(() => {
+      frames[i].classList.remove("on");
+      i = (i + 1) % frames.length;
+      frames[i].classList.add("on");
+    }, ms);
+  }
+  pace(125); // 8 drawings a second, "on twos" as hand-drawn animation does
+  return { idle: () => pace(125), work: () => pace(83) };
+})();
+
+// ------------------------------------------------------------------ state
+const $ = id => document.getElementById(id);
+let busy = "";            // the running job's name, from the launcher
+let state = null;         // the last /status
+let filled = false;       // sign-in fields filled from saved settings once
+let lastJobFailed = false;
+let lastJob = "";
+let realmSupported = null; // from the launcher: can it join a realm on this system
+
+// Progress, read from the install's own log lines (internal/install: "install manifest: N of M loose files",
+// "data: N to fetch", and "... X MB downloaded (R MB/s), L loose files, D data files" every 10 seconds). Lines it
+// doesn't know leave the bar hatched instead of showing a number.
+const prog = { loose: 0, data: 0, gotLoose: 0, gotData: 0, mb: 0, rate: 0, known: false };
+function resetProgress() {
+  Object.assign(prog, { loose: 0, data: 0, gotLoose: 0, gotData: 0, mb: 0, rate: 0, known: false });
+}
+function readProgress(line) {
+  let m;
+  if ((m = line.match(/install manifest: (\d+) of \d+ loose files/))) prog.loose = +m[1];
+  else if ((m = line.match(/^data: (\d+) to fetch/))) { prog.data = +m[1]; prog.known = prog.loose + prog.data > 0; }
+  else if ((m = line.match(/^\.\.\. (\d+) MB downloaded \(([\d.]+) MB\/s\), (\d+) loose files, (\d+) data files/))) {
+    prog.mb = +m[1]; prog.rate = +m[2]; prog.gotLoose = +m[3]; prog.gotData = +m[4];
+  } else if ((m = line.match(/^downloaded ([\d.]+) MB in/))) {
+    prog.mb = Math.round(+m[1]); prog.rate = 0; prog.gotLoose = prog.loose; prog.gotData = prog.data;
+  }
+}
+
+const VERB = { install: "Installing", verify: "Verifying", play: "Starting" };
+const NAME = { install: "Install", verify: "Verify", play: "Play" };
+const PHASE = {
+  install: () => prog.known ? "Downloading the client" : "Getting ready",
+  verify: () => "Checking every file",
+  play: () => "Joining Everlake",
+};
+
+function render() {
+  const s = state;
+  const status = $("status");
+  const installed = !!(s && s.installed);
+  const broken = installed && s.quick.checked && !s.quick.ok;
+  document.body.classList.toggle("busy", !!busy);
+  document.body.classList.toggle("cold", !!s && !installed && !busy);
+
+  // The big button does the next useful thing: install, repair, or play.
+  const play = $("play");
+  play.dataset.job = !installed ? "install" : broken ? "install" : "play";
+  play.textContent = busy ? (VERB[busy] || "Working") + "…" : !installed ? "Install" : broken ? "Repair" : "Play";
+  play.disabled = !s || !!busy;
+  $("install").disabled = !s || !!busy;
+  $("verify").disabled = !s || !!busy || !installed;
+  $("verify").parentElement.hidden = !installed; // nothing to update or verify before the first install
+
+  $("progress").hidden = !busy;
+  $("latest").hidden = !busy;
+  if (!s) return;
+
+  status.className = "status";
+  if (busy) {
+    status.classList.add("run");
+    $("statusText").textContent = PHASE[busy] ? PHASE[busy]() : busy + "…";
+    $("statusNote").textContent = "";
+    const bar = $("bar");
+    if (busy === "install" && prog.known) {
+      const done = prog.gotLoose + prog.gotData, total = prog.loose + prog.data;
+      const pct = Math.min(100, Math.floor(done * 100 / total));
+      bar.classList.remove("unknown");
+      $("fill").style.width = pct + "%";
+      $("progLeft").innerHTML = "<b>" + pct + "%</b> · " + done.toLocaleString() + " of " + total.toLocaleString() + " files";
+      $("progRight").textContent = prog.mb ? prog.mb.toLocaleString() + " MB" + (prog.rate ? " · " + prog.rate.toFixed(1) + " MB/s" : "") : "";
+    } else {
+      bar.classList.add("unknown");
+      $("fill").style.width = "";
+      $("progLeft").textContent = busy === "install" ? "Reading the build…" : "";
+      $("progRight").textContent = "";
+    }
+  } else if (!installed) {
+    $("statusText").textContent = "Not installed yet";
+    $("statusNote").textContent = "Install downloads the Forever client from Blizzard's servers and checks every file.";
+  } else if (s.quick.checked && s.quick.ok) {
+    status.classList.add("ok");
+    $("statusText").textContent = "Ready to play";
+    $("statusNote").textContent = "Client files intact. Verify files does a full hash check.";
+  } else if (s.quick.checked) {
+    status.classList.add("bad");
+    const parts = [];
+    if (s.quick.changed) parts.push(s.quick.changed + " changed");
+    if (s.quick.missing) parts.push(s.quick.missing + " missing");
+    $("statusText").textContent = "Needs repair";
+    $("statusNote").textContent = parts.join(", ") + ". Repair fetches them again.";
+  } else {
+    $("statusText").textContent = "Installed";
+    $("statusNote").textContent = s.quick.note || "";
+  }
+  if (!busy && lastJobFailed) {
+    status.className = "status bad";
+    $("statusText").textContent = "Something went wrong";
+    $("statusNote").textContent = (NAME[lastJob] || "The last job") + " stopped with an error; the log has the details.";
+  }
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch("status")).json();
+    state = s;
+    const wasBusy = busy;
+    busy = s.busy || "";
+    if (busy && !wasBusy) spell.work();
+    if (!busy && wasBusy) spell.idle();
+    $("version").textContent = s.version ? "Build " + s.version : "";
+    $("path").textContent = s.dir;
+    $("path").title = s.dir;
+    if (!filled && s.realm) {
+      filled = true;
+      if (s.realm.supported) {
+        realmSupported = true;
         $("loginHost").value = s.realm.login_host || "";
         $("email").value = s.realm.email || "";
-        if (!s.realm.supported) {
-          $("realmNote").textContent = "Joining a realm from the launcher works on Windows only for now; on macOS "
-            + "Play starts the game on its own.";
-        }
-      }
-      const dot = $("dot");
-      if (s.busy) {
-        dot.className = "dot";
-        $("statusText").textContent = s.busy.charAt(0).toUpperCase() + s.busy.slice(1) + " running…";
-        $("statusNote").textContent = "";
-      } else if (!s.installed) {
-        dot.className = "dot";
-        $("statusText").textContent = "Not installed yet";
-        $("statusNote").textContent = "Press Install to download the client.";
-      } else if (s.quick.checked && s.quick.ok) {
-        dot.className = "dot ok";
-        $("statusText").textContent = "Client files intact";
-        $("statusNote").textContent = "Quick check only; Verify does a full hash check.";
-      } else if (s.quick.checked) {
-        dot.className = "dot bad";
-        $("statusText").textContent = s.quick.changed + " changed, " + s.quick.missing + " missing";
-        $("statusNote").textContent = "Run Install to repair.";
+        showHost(!s.realm.login_host);
       } else {
-        dot.className = "dot";
-        $("statusText").textContent = "Installed";
-        $("statusNote").textContent = s.quick.note || "";
+        realmSupported = false;
       }
-    } catch (e) { /* server stopped */ }
-  }
-
-  async function run(name) {
-    if (busy) return;
-    log.textContent = "";
-    const opts = { method: "POST" };
-    if (name === "play") {
-      opts.headers = { "Content-Type": "application/json" };
-      opts.body = JSON.stringify({ login_host: $("loginHost").value.trim(), email: $("email").value.trim(),
-                                   password: $("password").value });
     }
-    const res = await fetch("run?name=" + name, opts);
-    if (!res.ok) { log.textContent = await res.text(); return; }
-    busy = true; setButtons(); refresh();
+    // The sign-in shows once there's a client to sign in with.
+    $("realm").hidden = !(realmSupported && s.installed);
+    $("macNote").hidden = !(realmSupported === false && s.installed);
+    render();
+  } catch (e) { /* the launcher stopped */ }
+}
+
+// A saved login server shows as one line; Change opens the field.
+function showHost(editing) {
+  $("hostShown").textContent = $("loginHost").value;
+  $("hostLine").hidden = editing;
+  $("hostField").hidden = !editing;
+  $("realmNote").hidden = !editing;
+}
+$("hostEdit").onclick = () => { showHost(true); $("loginHost").focus(); };
+
+async function run(name) {
+  if (busy) return;
+  const opts = { method: "POST" };
+  if (name === "play") {
+    opts.headers = { "Content-Type": "application/json" };
+    opts.body = JSON.stringify({ login_host: $("loginHost").value.trim(), email: $("email").value.trim(),
+                                 password: $("password").value });
   }
-  $("play").onclick = () => run("play");
-  $("install").onclick = () => run("install");
-  $("verify").onclick = () => run("verify");
-
-  const es = new EventSource("events");
-  es.onmessage = ev => {
-    const line = JSON.parse(ev.data);
-    log.textContent += (log.textContent ? "\n" : "") + line;
-    log.scrollTop = log.scrollHeight;
-    if (line === "=== done ===") { busy = false; setButtons(); refresh(); }
-  };
-
+  clearLog();
+  resetProgress();
+  lastJobFailed = false;
+  const res = await fetch("run?name=" + name, opts);
+  if (!res.ok) { addLine("error: " + (await res.text()).trim()); openLog(true); return; }
+  busy = name;
+  spell.work();
+  render();
   refresh();
-  setInterval(refresh, 4000);
+}
+$("play").onclick = () => run($("play").dataset.job || "play");
+$("install").onclick = () => run("install");
+$("verify").onclick = () => run("verify");
+$("password").addEventListener("keydown", e => { if (e.key === "Enter" && !$("play").disabled) $("play").click(); });
+
+// ------------------------------------------------------------------ log
+const log = $("log");
+function clearLog() { log.textContent = ""; }
+function addLine(line) {
+  const div = document.createElement("div");
+  div.textContent = line;
+  if (/^(error|BAD |MISSING|CHANGED)/.test(line)) div.className = "err";
+  else if (/^--- .* ---$/.test(line)) div.className = "head";
+  else if (line === "=== done ===") div.className = "end";
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  log.appendChild(div);
+  if (atEnd) log.scrollTop = log.scrollHeight;
+}
+function openLog(open) {
+  $("drawer").classList.toggle("open", open);
+  $("logToggle").setAttribute("aria-expanded", String(open));
+  if (open) log.scrollTop = log.scrollHeight;
+}
+$("logToggle").onclick = () => openLog(!$("drawer").classList.contains("open"));
+$("logClose").onclick = () => openLog(false);
+document.addEventListener("keydown", e => { if (e.key === "Escape") openLog(false); });
+
+// The launcher replays the running job's lines to a page that (re)connects, so a fresh connection starts clean.
+const es = new EventSource("events");
+es.onopen = () => { clearLog(); resetProgress(); };
+es.onmessage = ev => {
+  const line = JSON.parse(ev.data);
+  let m;
+  addLine(line);
+  if ((m = line.match(/^--- (\w+) ---$/))) { resetProgress(); lastJob = m[1]; lastJobFailed = false; }
+  if (/^error: /.test(line)) lastJobFailed = true;
+  readProgress(line);
+  // The latest line under the bar; the 10-second download counts are already in the bar.
+  if (line !== "=== done ===" && !/^--- \w+ ---$/.test(line) && !line.startsWith("... ")) $("latest").textContent = line;
+  if (line === "=== done ===") {
+    busy = "";
+    spell.idle();
+    if (lastJobFailed) openLog(true);
+    refresh();
+  } else {
+    render();
+  }
+};
+
+render();
+refresh();
+setInterval(refresh, 4000);
 </script>
 </body>
 </html>

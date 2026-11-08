@@ -13,7 +13,7 @@ and compiled in, so a launcher release always installs exactly the client the re
 sign-in fields, and its output live. There's no console window and no browser tab. It uses the install folder
 `C:\Everlake` on Windows and `~/Everlake` on macOS.
 
-![The launcher's window on macOS](docs/images/launcher-window-macos.png)
+![The launcher's window](docs/images/launcher-window.png)
 
 | | File | |
 |---|---|---|
