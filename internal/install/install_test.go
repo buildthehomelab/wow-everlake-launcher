@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/casc"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
@@ -517,5 +519,61 @@ func TestBuildInfoNamesGameHosts(t *testing.T) {
 	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
 	if !strings.Contains(string(bi), "|cdn.example|http://cdn.example/?maxhosts=4|") || strings.Contains(string(bi), f.cdn.Host()) {
 		t.Errorf(".build.info names the install's mirror:\n%s", bi)
+	}
+}
+
+func TestQuickVerify(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := QuickVerify(dir)
+	if err != nil || rep.Failed() {
+		t.Fatalf("quick check after install: %+v %v", rep, err)
+	}
+	// Changes to the game's own storage and the launcher's records must not trip the quick check.
+	os.WriteFile(filepath.Join(dir, "Data", "data", "data.000"), []byte("the game grew this"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".everlake", "scratch"), []byte("x"), 0o644)
+	if rep, err := QuickVerify(dir); err != nil || rep.Failed() {
+		t.Fatalf("quick check minds Data/data: %+v %v", rep, err)
+	}
+
+	// A loose file edited to the same length (new mtime), and a deleted config.
+	mac := filepath.Join(dir, "_forever_", "World of Warcraft.app", "Contents", "MacOS", "World of Warcraft")
+	b, _ := os.ReadFile(mac)
+	b[0] ^= 1
+	later := time.Now().Add(time.Second)
+	os.WriteFile(mac, b, 0o644)
+	os.Chtimes(mac, later, later)
+	cfgDir := filepath.Join(dir, "Data", "config")
+	var gone string
+	filepath.WalkDir(cfgDir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && gone == "" {
+			gone = p
+		}
+		return nil
+	})
+	os.Remove(gone)
+
+	rep, err = QuickVerify(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Bad) != 1 || rep.Bad[0] != mac || len(rep.Missing) != 1 || rep.Missing[0] != gone {
+		t.Fatalf("quick check after damage: bad %v, missing %v", rep.Bad, rep.Missing)
+	}
+
+	// An install with no fingerprints (an older launcher) can't be quick-checked.
+	st, _ := ReadState(dir)
+	st.Files = nil
+	data, _ := json.MarshalIndent(st, "", "  ")
+	os.WriteFile(filepath.Join(dir, ".everlake", "install.json"), data, 0o644)
+	if _, err := QuickVerify(dir); !errors.Is(err, ErrNoFingerprints) {
+		t.Errorf("no-fingerprints install: %v", err)
+	}
+
+	if _, err := QuickVerify(filepath.Join(t.TempDir(), "empty")); !errors.Is(err, ErrNoInstall) {
+		t.Errorf("quick check of an empty folder: %v", err)
 	}
 }

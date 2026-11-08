@@ -18,7 +18,10 @@ Work in progress. What works today:
   layout a Battle.net install has), and `.build.info` names the build and the CDN. A folder an earlier launcher
   filled (with `.everlake/staged/`) is moved over without downloading again.
 - `verify` re-checks what the install fetched (it reads `.everlake/install.json`), writes nothing, and lists what's
-  damaged or missing; `install` again repairs exactly those.
+  damaged or missing; `install` again repairs exactly those. `verify --quick` is the fast check for every launch: it
+  compares the client files (the loose files, configs, indexes, `.build.info`, `.flavor.info`) against the size and
+  timestamp recorded at install, in a few milliseconds and without hashing. It doesn't deep-check the game's data
+  storage (`Data/data`) — the full `verify` does that.
 - A run that's stopped or killed resumes: the key tables are saved every 30 seconds, and a half-written archive
   with nothing pointing into it is removed.
 - **Not yet:** starting the game on our realm (login, the server key patch). Whether the game starts from this
@@ -32,7 +35,8 @@ go build -o everlake-launcher ./cmd/everlake-launcher
 ./everlake-launcher show                                    # the pinned build: tags, file counts, sizes
 ./everlake-launcher install --dir ~/Everlake --no-data      # the game's loose files only (~400 MB)
 ./everlake-launcher install --dir ~/Everlake                # everything for this machine (~85 GB)
-./everlake-launcher verify  --dir ~/Everlake
+./everlake-launcher verify  --dir ~/Everlake                # full hash check
+./everlake-launcher verify  --dir ~/Everlake --quick        # size + timestamps only, for every launch
 ./everlake-launcher pin                                     # what's live now, as a pin to review
 ./everlake-launcher start   --dir ~/Everlake                # starts the game the way Battle.net would (-uid wowf)
 ```
