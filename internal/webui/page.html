@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Everlake launcher</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f23; --muted:#6b7280; --card:#fff; --line:#e5e7eb;
+          --accent:#3b5bdb; --ok:#2f9e44; --bad:#e03131; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16181d; --fg:#e8eaed; --muted:#9aa0a6; --card:#20242b;
+          --line:#2d333b; --accent:#5c7cfa; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:20px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:20px; word-break:break-all; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .status { display:flex; align-items:center; gap:10px; font-weight:600; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
+  .note { color:var(--muted); font-weight:400; font-size:13px; margin-top:6px; }
+  .buttons { display:flex; gap:10px; flex-wrap:wrap; }
+  button { font:inherit; font-weight:600; padding:10px 16px; border-radius:8px; border:1px solid var(--line);
+           background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  pre { background:#0b0d10; color:#d6deeb; border-radius:8px; padding:12px; height:300px; overflow:auto; margin:0;
+        font:12px/1.5 ui-monospace, monospace; white-space:pre-wrap; word-break:break-word; }
+  @media (prefers-color-scheme: light) { pre { background:#0d1117; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Everlake launcher</h1>
+  <div class="sub" id="sub">—</div>
+
+  <div class="card">
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Checking…</span></div>
+    <div class="note" id="statusNote"></div>
+  </div>
+
+  <div class="card buttons">
+    <button class="primary" id="play">Play</button>
+    <button id="install">Install / update</button>
+    <button id="verify">Verify</button>
+  </div>
+
+  <div class="card">
+    <pre id="log">The launcher's output appears here.</pre>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const log = $("log");
+  let busy = false;
+
+  function setButtons() {
+    for (const id of ["play", "install", "verify"]) $(id).disabled = busy;
+  }
+
+  async function refresh() {
+    try {
+      const s = await (await fetch("status")).json();
+      $("sub").textContent = (s.version ? "WoW Forever " + s.version + " — " : "") + s.dir;
+      busy = !!s.busy;
+      setButtons();
+      const dot = $("dot");
+      if (s.busy) {
+        dot.className = "dot";
+        $("statusText").textContent = s.busy.charAt(0).toUpperCase() + s.busy.slice(1) + " running…";
+        $("statusNote").textContent = "";
+      } else if (!s.installed) {
+        dot.className = "dot";
+        $("statusText").textContent = "Not installed yet";
+        $("statusNote").textContent = "Press Install to download the client.";
+      } else if (s.quick.checked && s.quick.ok) {
+        dot.className = "dot ok";
+        $("statusText").textContent = "Client files intact";
+        $("statusNote").textContent = "Quick check only; Verify does a full hash check.";
+      } else if (s.quick.checked) {
+        dot.className = "dot bad";
+        $("statusText").textContent = s.quick.changed + " changed, " + s.quick.missing + " missing";
+        $("statusNote").textContent = "Run Install to repair.";
+      } else {
+        dot.className = "dot";
+        $("statusText").textContent = "Installed";
+        $("statusNote").textContent = s.quick.note || "";
+      }
+    } catch (e) { /* server stopped */ }
+  }
+
+  async function run(name) {
+    if (busy) return;
+    log.textContent = "";
+    const res = await fetch("run?name=" + name, { method: "POST" });
+    if (!res.ok) { log.textContent = await res.text(); return; }
+    busy = true; setButtons(); refresh();
+  }
+  $("play").onclick = () => run("play");
+  $("install").onclick = () => run("install");
+  $("verify").onclick = () => run("verify");
+
+  const es = new EventSource("events");
+  es.onmessage = ev => {
+    const line = JSON.parse(ev.data);
+    log.textContent += (log.textContent ? "\n" : "") + line;
+    log.scrollTop = log.scrollHeight;
+    if (line === "=== done ===") { busy = false; setButtons(); refresh(); }
+  };
+
+  refresh();
+  setInterval(refresh, 4000);
+</script>
+</body>
+</html>

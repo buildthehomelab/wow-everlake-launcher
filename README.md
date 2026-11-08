@@ -51,7 +51,13 @@ go build -o everlake-launcher ./cmd/everlake-launcher
 ./everlake-launcher verify  --dir ~/Everlake --quick        # size + timestamps only, for every launch
 ./everlake-launcher pin                                     # what's live now, as a pin to review
 ./everlake-launcher start   --dir ~/Everlake                # starts the game the way Battle.net would (-uid wowf)
+./everlake-launcher ui      --dir ~/Everlake                # a local page with Install / Verify / Play buttons
 ```
+
+`ui` is the same jobs with buttons instead of typed commands: it opens a page in your browser (served only on your
+own machine, `127.0.0.1`) showing whether the client is intact, with **Install / update**, **Verify** and **Play**,
+and the launcher's output live. It still doesn't join a realm — `start`/`Play` get you to the game's own login
+screen, no further.
 
 `--tags` picks platform, architecture, locale and region (default: this machine, `enUS`, `US`). The region matters:
 the Mac game binary for CN differs from everyone else's. `--max-priority` and `--data-limit-mb` cut the data stage

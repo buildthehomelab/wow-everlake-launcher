@@ -5,6 +5,7 @@
 //	everlake-launcher show    [--tags ...]          the pinned build: tags and sizes, nothing written
 //	everlake-launcher pin     [--product wowf]      prints a pin for the build that is live now (to review, not to follow)
 //	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
+//	everlake-launcher ui      --dir <folder>        a local page with Install / Verify / Play buttons
 package main
 
 import (
@@ -13,10 +14,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -27,6 +29,7 @@ import (
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/webui"
 )
 
 var version = "dev"
@@ -50,6 +53,8 @@ func main() {
 		err = cmdPin(ctx, os.Args[2:])
 	case "start":
 		err = cmdStart(os.Args[2:])
+	case "ui":
+		err = cmdUI(ctx, os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -69,6 +74,7 @@ func usage() {
   everlake-launcher show    [--tags ...]
   everlake-launcher pin     [--product wowf] [--region us]
   everlake-launcher start   --dir <folder> [-- game arguments]
+  everlake-launcher ui      --dir <folder> [--addr 127.0.0.1:PORT] [--no-open]
 `)
 	os.Exit(2)
 }
@@ -356,23 +362,111 @@ func cmdStart(args []string) error {
 	if *dir == "" {
 		return fmt.Errorf("start: --dir is required")
 	}
-	st, err := install.ReadState(*dir)
+	pid, err := install.Start(*dir, fs.Args()...)
 	if err != nil {
-		return fmt.Errorf("%s: %w", *dir, install.ErrNoInstall)
-	}
-	p := st.Pin
-	exe := filepath.Join(*dir, p.GameFolder, "Wow.exe")
-	if runtime.GOOS == "darwin" {
-		exe = filepath.Join(*dir, p.GameFolder, "World of Warcraft.app", "Contents", "MacOS", "World of Warcraft")
-	}
-	if _, err := os.Stat(exe); err != nil {
-		return fmt.Errorf("no game in %s: run install first", *dir)
-	}
-	cmd := exec.Command(exe, append(p.StartArgs(), fs.Args()...)...)
-	cmd.Dir = filepath.Join(*dir, p.GameFolder)
-	if err := cmd.Start(); err != nil {
 		return err
 	}
-	logf("started %s %s (process %d)", exe, strings.Join(cmd.Args[1:], " "), cmd.Process.Pid)
-	return cmd.Process.Release()
+	logf("started the game (process %d)", pid)
+	return nil
+}
+
+// installOptions builds the options the ui's Install and Verify buttons use. Install does a full install/repair;
+// verify reads what the install recorded.
+func installOptions(ctx context.Context, dir string, verify bool) install.Options {
+	p := pin.Default()
+	opts := install.Options{Dir: dir, Pin: p, Tags: splitTags(defaultTags()), Jobs: 8, Verify: verify}
+	if verify {
+		if st, err := install.ReadState(dir); err == nil {
+			opts.Tags, opts.NoData, opts.MaxPriority = st.Tags, st.NoData, st.MaxPriority
+			opts.PartialData = st.DataLimit > 0
+		}
+	}
+	opts.GameHosts = p.Hosts(ctx, nil)
+	opts.CDN = cdn.New(opts.GameHosts, p.CDNPath)
+	return opts
+}
+
+// runInstall runs an install or verify and reports the outcome through log.
+func runInstall(ctx context.Context, opts install.Options, log func(string)) error {
+	opts.Log = func(f string, a ...any) { log(fmt.Sprintf(f, a...)) }
+	start := time.Now()
+	rep, err := install.Run(ctx, opts)
+	if err != nil {
+		return err
+	}
+	log(fmt.Sprintf("loose files: %d (%d already there, %d fetched)", rep.LooseFiles, rep.LooseKept, rep.LooseFetched))
+	if !opts.NoData {
+		log(fmt.Sprintf("data files: %d (%d already stored, %d fetched, %d left out by a data limit)",
+			rep.DataFiles, rep.DataKept, rep.DataFetched, rep.DataSkippedByLimit))
+	}
+	log(fmt.Sprintf("downloaded %.1f MB in %s", float64(rep.BytesDownloaded)/(1<<20), time.Since(start).Round(time.Second)))
+	for _, b := range rep.Bad {
+		log("BAD     " + b)
+	}
+	for _, m := range rep.Missing {
+		log("MISSING " + m)
+	}
+	if rep.Failed() {
+		return fmt.Errorf("%d bad, %d missing", len(rep.Bad), len(rep.Missing))
+	}
+	if opts.Verify {
+		log("everything checked is intact")
+	}
+	return nil
+}
+
+func cmdUI(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	dir := fs.String("dir", "", "install folder (required)")
+	addr := fs.String("addr", "127.0.0.1:0", "address to listen on (loopback only)")
+	noOpen := fs.Bool("no-open", false, "don't open the browser")
+	fs.Parse(args)
+	if *dir == "" {
+		return fmt.Errorf("ui: --dir is required")
+	}
+	if !strings.HasPrefix(*addr, "127.0.0.1:") && !strings.HasPrefix(*addr, "localhost:") && !strings.HasPrefix(*addr, "[::1]:") {
+		return fmt.Errorf("ui: --addr must be on the loopback address (127.0.0.1, localhost or [::1])")
+	}
+	srv := webui.New(*dir, pin.Default().Version, webui.Actions{
+		Install: func(ctx context.Context, log func(string)) error {
+			return runInstall(ctx, installOptions(ctx, *dir, false), log)
+		},
+		Verify: func(ctx context.Context, log func(string)) error {
+			return runInstall(ctx, installOptions(ctx, *dir, true), log)
+		},
+		Play: func() (int, error) { return install.Start(*dir) },
+	})
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return err
+	}
+	url := "http://" + ln.Addr().String() + "/"
+	logf("Everlake launcher page at %s  (Ctrl-C to stop)", url)
+	if !*noOpen {
+		openBrowser(url)
+	}
+	hs := &http.Server{Handler: srv.Handler()}
+	go func() { <-ctx.Done(); hs.Close() }()
+	if err := hs.Serve(ln); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// openBrowser points the system browser at url, best effort.
+func openBrowser(url string) {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name = "open"
+		args = []string{url}
+	case "windows":
+		name = "rundll32"
+		args = []string{"url.dll,FileProtocolHandler", url}
+	default:
+		name = "xdg-open"
+		args = []string{url}
+	}
+	_ = exec.Command(name, args...).Start()
 }
