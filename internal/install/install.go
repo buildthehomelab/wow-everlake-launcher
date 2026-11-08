@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -1004,6 +1005,34 @@ func fingerprint(dir, gameFolder string) ([]FileFP, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// GameExe is the game's executable inside an install folder, for the current platform.
+func GameExe(dir, gameFolder string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(dir, gameFolder, "World of Warcraft.app", "Contents", "MacOS", "World of Warcraft")
+	}
+	return filepath.Join(dir, gameFolder, "Wow.exe")
+}
+
+// Start launches the installed game with the arguments Battle.net would give it (pin.StartArgs), plus extra. It
+// doesn't log in anywhere: the game shows its own login screen. It returns the new process id.
+func Start(dir string, extra ...string) (int, error) {
+	st, err := ReadState(dir)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", dir, ErrNoInstall)
+	}
+	exe := GameExe(dir, st.Pin.GameFolder)
+	if _, err := os.Stat(exe); err != nil {
+		return 0, fmt.Errorf("no game in %s: run install first", dir)
+	}
+	cmd := exec.Command(exe, append(st.Pin.StartArgs(), extra...)...)
+	cmd.Dir = filepath.Join(dir, st.Pin.GameFolder)
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	pid := cmd.Process.Pid
+	return pid, cmd.Process.Release()
 }
 
 // QuickVerify checks the fingerprinted client files by size and modification time only, without reading or hashing
