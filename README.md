@@ -18,6 +18,10 @@ folder inside it. Nothing is moved for you: after a change, Install downloads th
 choice is saved in `launcher.json` in your config folder (`%AppData%\Everlake` on Windows, `~/Library/Application
 Support/Everlake` on macOS); `ui --dir` starts on another folder without changing it.
 
+**Animation on / off** in the footer stops the moving art (the spell burst, the progress stripes, the spinner).
+Until you use it, the system's "reduce motion" setting decides. The colour swatches beside it pick the window's
+colour. Both are kept in `launcher.json` too.
+
 ![The launcher's window](docs/images/launcher-window.png)
 
 | | File | |

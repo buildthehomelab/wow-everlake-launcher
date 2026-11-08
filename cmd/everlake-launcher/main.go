@@ -548,6 +548,13 @@ func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) er
 		SaveFolder: func(dir string) error {
 			return settings.Update(func(s *settings.Settings) { s.InstallDir = dir })
 		},
+		Look: func() webui.Look {
+			s, _ := settings.Load()
+			return webui.Look{School: s.School, Animation: s.Animation}
+		},
+		SaveLook: func(l webui.Look) error {
+			return settings.Update(func(s *settings.Settings) { s.School, s.Animation = l.School, l.Animation })
+		},
 		LauncherVersion: version,
 	})
 	ln, err := net.Listen("tcp", addr)

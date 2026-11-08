@@ -4,6 +4,7 @@
 package webui
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,11 @@ type Actions struct {
 	// Installed reports whether a folder holds a finished install; nil means install.ReadState.
 	Installed func(dir string) bool
 
+	// Look reports the page's saved look and SaveLook keeps a change to it for next time. Nil means the page's own
+	// choices last only as long as it's open.
+	Look     func() Look
+	SaveLook func(Look) error
+
 	// LauncherVersion is the launcher's own version, shown on the page.
 	LauncherVersion string
 }
@@ -66,6 +73,17 @@ type RealmStatus struct {
 	PasswordSaved bool `json:"password_saved"`
 }
 
+// Look is how the page looks: its colour (a school of magic) and whether its art moves. The page itself lives at a
+// new address each launch, so its own storage doesn't last; the launcher keeps these instead.
+type Look struct {
+	School string `json:"school,omitempty"` // empty: a different one each launch
+	// Animation false keeps the art still; nil follows the system's "reduce motion" setting.
+	Animation *bool `json:"animation,omitempty"`
+}
+
+// schoolName is a colour name the page could have sent: it goes into the page's HTML, so nothing else is kept.
+var schoolName = regexp.MustCompile(`^[a-z]{1,16}$`)
+
 // Server is the launcher's local page.
 type Server struct {
 	dir     string
@@ -75,6 +93,8 @@ type Server struct {
 	mu     sync.Mutex
 	busy   string // the running job's name, or ""
 	notice string // something the launcher wants the player to know about itself (an update it can't do)
+
+	lookMu sync.Mutex // one look change at a time, so two quick clicks don't lose one
 
 	submu    sync.Mutex
 	subs     map[chan string]struct{}
@@ -107,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/run", s.run)
 	mux.HandleFunc("/events", s.events)
 	mux.HandleFunc("/folder", s.folder)
+	mux.HandleFunc("/look", s.look)
 	return localOnly(mux)
 }
 
@@ -138,7 +159,59 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data, _ := files.ReadFile("page.html")
+	// The saved look goes on <body> before the page draws anything, so it doesn't start moving (or in another
+	// colour) and then change once it asks.
+	if s.act.Look != nil {
+		look := s.act.Look()
+		attrs := ""
+		if schoolName.MatchString(look.School) {
+			attrs += ` data-saved-school="` + look.School + `"`
+		}
+		if look.Animation != nil {
+			attrs += fmt.Sprintf(` data-animation="%t"`, *look.Animation)
+		}
+		data = bytes.Replace(data, []byte("<body "), []byte("<body"+attrs+" "), 1)
+	}
 	w.Write(data)
+}
+
+// look keeps a change to the page's look (POST, JSON with the fields that changed).
+func (s *Server) look(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "look takes application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	var change Look
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&change); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if change.School != "" && !schoolName.MatchString(change.School) {
+		http.Error(w, "unknown colour", http.StatusBadRequest)
+		return
+	}
+	if s.act.Look == nil || s.act.SaveLook == nil {
+		w.WriteHeader(http.StatusNoContent) // nothing to keep it in; the page still changes while it's open
+		return
+	}
+	s.lookMu.Lock()
+	defer s.lookMu.Unlock()
+	look := s.act.Look()
+	if change.School != "" {
+		look.School = change.School
+	}
+	if change.Animation != nil {
+		look.Animation = change.Animation
+	}
+	if err := s.act.SaveLook(look); err != nil {
+		http.Error(w, "couldn't save it: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type statusResp struct {

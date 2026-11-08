@@ -26,6 +26,24 @@ func TestSaveLoad(t *testing.T) {
 	}
 }
 
+func TestLookKept(t *testing.T) {
+	t.Setenv("EVERLAKE_SETTINGS", filepath.Join(t.TempDir(), "launcher.json"))
+	off := false
+	if err := Update(func(s *Settings) { s.InstallDir = "/games/Everlake" }); err != nil {
+		t.Fatal(err)
+	}
+	if err := Update(func(s *Settings) { s.School, s.Animation = "holy", &off }); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.InstallDir != "/games/Everlake" || s.School != "holy" || s.Animation == nil || *s.Animation {
+		t.Errorf("after two updates: %+v", s)
+	}
+}
+
 func TestChooseInstallDir(t *testing.T) {
 	root := t.TempDir()
 	never := func(string) bool { return false }

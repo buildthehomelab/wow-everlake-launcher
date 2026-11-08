@@ -437,3 +437,54 @@ func TestBeginLauncherJob(t *testing.T) {
 		t.Fatal("still busy after the job ended")
 	}
 }
+
+func TestLookSavedAndShown(t *testing.T) {
+	var saved Look
+	srv := New(t.TempDir(), "x", Actions{
+		Look:     func() Look { return saved },
+		SaveLook: func(l Look) error { saved = l; return nil },
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Nothing saved: the page follows the system and picks its own colour.
+	if body := get(t, ts.URL+"/"); strings.Contains(body, "data-animation=") || strings.Contains(body, "data-saved-school=") {
+		t.Error("page carries a look nobody picked")
+	}
+
+	if code, msg := postJSON(t, ts.URL+"/look", `{"animation":false}`); code != http.StatusNoContent {
+		t.Fatalf("animation off: %d %s", code, msg)
+	}
+	if code, msg := postJSON(t, ts.URL+"/look", `{"school":"frost"}`); code != http.StatusNoContent {
+		t.Fatalf("colour: %d %s", code, msg)
+	}
+	// One change at a time keeps the other.
+	if saved.School != "frost" || saved.Animation == nil || *saved.Animation {
+		t.Errorf("saved look: %+v", saved)
+	}
+	body := get(t, ts.URL+"/")
+	if !strings.Contains(body, `<body data-saved-school="frost" data-animation="false" data-school=`) {
+		t.Errorf("page doesn't start with the saved look: %q", body[strings.Index(body, "<body"):][:80])
+	}
+
+	// The colour goes into the page's HTML, so only a plain name is taken.
+	for _, bad := range []string{`{"school":"x\" onload=\"y"}`, `{"school":"Frost"}`, `{nope`} {
+		if code, _ := postJSON(t, ts.URL+"/look", bad); code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", bad, code)
+		}
+	}
+	if saved.School != "frost" {
+		t.Errorf("a refused change was kept: %+v", saved)
+	}
+	if code := post(t, ts.URL+"/look"); code != http.StatusUnsupportedMediaType {
+		t.Errorf("not JSON: %d", code)
+	}
+}
+
+func TestLookWithoutStore(t *testing.T) {
+	ts := httptest.NewServer(New(t.TempDir(), "x", Actions{}).Handler())
+	defer ts.Close()
+	if code, _ := postJSON(t, ts.URL+"/look", `{"animation":true}`); code != http.StatusNoContent {
+		t.Errorf("no store: %d", code)
+	}
+}
