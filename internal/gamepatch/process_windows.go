@@ -16,8 +16,6 @@ var (
 	procWriteProcessMemory    = kernel32.NewProc("WriteProcessMemory")
 	procVirtualQueryEx        = kernel32.NewProc("VirtualQueryEx")
 	procVirtualProtectEx      = kernel32.NewProc("VirtualProtectEx")
-	procNtSuspendProcess      = ntdll.NewProc("NtSuspendProcess")
-	procNtResumeProcess       = ntdll.NewProc("NtResumeProcess")
 	procNtQueryInformationPro = ntdll.NewProc("NtQueryInformationProcess")
 )
 
@@ -26,12 +24,12 @@ const (
 	processVMRead              = 0x0010
 	processVMWrite             = 0x0020
 	processQueryInformation    = 0x0400
-	processSuspendResume       = 0x0800
 	memCommit                  = 0x1000
 	memPrivate                 = 0x20000
 	pageNoAccess               = 0x01
 	pageReadWrite              = 0x04
 	pageGuard                  = 0x100
+	writable                   = 0x04 | 0x08 | 0x40 | 0x80 // PAGE_READWRITE, WRITECOPY, EXECUTE_READWRITE, EXECUTE_WRITECOPY
 	stillActive                = 259
 	processBasicInformationCls = 0
 )
@@ -60,8 +58,9 @@ func OpenProcess(pid int) (*Process, error) {
 	if unsafe.Sizeof(uintptr(0)) != 8 {
 		return nil, fmt.Errorf("the game patches need a 64-bit launcher")
 	}
-	h, err := syscall.OpenProcess(processVMOperation|processVMRead|processVMWrite|processQueryInformation|
-		processSuspendResume, false, uint32(pid))
+	// The rights Karrz's launcher opens the live client with, and no more: no suspend/resume.
+	h, err := syscall.OpenProcess(processVMOperation|processVMRead|processVMWrite|processQueryInformation, false,
+		uint32(pid))
 	if err != nil {
 		return nil, fmt.Errorf("open the game process: %w", err)
 	}
@@ -120,22 +119,23 @@ func (p *Process) ReadInto(addr uint64, buf []byte) []byte {
 	return buf[:got]
 }
 
-// Write writes data at addr, making the pages writable for the moment if they aren't.
+// Write writes data at addr, only where the game's own memory is writable already. It never changes a page's
+// protection: the live client's protection (Wow_loader.dll) notices a page of its image being made writable, even when
+// the bytes are put back, and ends the game with a "Security Crash" about 30 seconds after start (alpha.7 and
+// alpha.11, 2026-11-08).
 func (p *Process) Write(addr uint64, data []byte) bool {
 	if len(data) == 0 {
 		return true
 	}
-	var old uint32
-	changed, _, _ := procVirtualProtectEx.Call(uintptr(p.h), uintptr(addr), uintptr(len(data)), pageReadWrite,
-		uintptr(unsafe.Pointer(&old)))
+	for a := addr &^ 0xfff; a < addr+uint64(len(data)); a += 0x1000 {
+		mbi, ok := p.query(a)
+		if !ok || mbi.State != memCommit || mbi.Protect&pageGuard != 0 || mbi.Protect&writable == 0 {
+			return false
+		}
+	}
 	var n uintptr
 	r, _, _ := procWriteProcessMemory.Call(uintptr(p.h), uintptr(addr), uintptr(unsafe.Pointer(&data[0])),
 		uintptr(len(data)), uintptr(unsafe.Pointer(&n)))
-	if changed != 0 {
-		var tmp uint32
-		procVirtualProtectEx.Call(uintptr(p.h), uintptr(addr), uintptr(len(data)), uintptr(old),
-			uintptr(unsafe.Pointer(&tmp)))
-	}
 	return r != 0 && int(n) == len(data)
 }
 
@@ -147,10 +147,6 @@ func (p *Process) Alive() bool {
 	}
 	return code == stillActive
 }
-
-// Suspend and Resume stop and restart every thread of the process.
-func (p *Process) Suspend() error { return ntStatus(procNtSuspendProcess.Call(uintptr(p.h))) }
-func (p *Process) Resume() error  { return ntStatus(procNtResumeProcess.Call(uintptr(p.h))) }
 
 func ntStatus(r uintptr, _ uintptr, _ error) error {
 	if r != 0 {

@@ -164,38 +164,37 @@ func TestFindPortal(t *testing.T) {
 	// A pointer to it without the length beside it.
 	binary.LittleEndian.PutUint64(img[0x2100:], base+0x1001)
 	binary.LittleEndian.PutUint64(img[0x2108:], 99)
+	rdata := append([]byte(nil), img[0x1000:0x2000]...)
 
 	pp := FindPortal(img, base)
-	if len(pp.Suffixes) != 1 || pp.Suffixes[0] != base+0x1001 {
-		t.Fatalf("suffixes: %x", pp.Suffixes)
-	}
-	if len(pp.Lengths) != 1 || pp.Lengths[0] != base+0x2008 {
-		t.Fatalf("lengths: %x", pp.Lengths)
+	if len(pp.Entries) != 1 || pp.Entries[0] != (PortalEntry{At: base + 0x2000, Ending: base + 0x1001}) {
+		t.Fatalf("entries: %+v", pp.Entries)
 	}
 	mem := &fakeMem{base: base, data: img, alive: true}
-	s, l := pp.Apply(mem)
-	if s != 1 || l != 1 {
-		t.Fatalf("applied %d endings, %d lengths", s, l)
+	if n := pp.Apply(mem); n != 1 {
+		t.Fatalf("applied %d entries", n)
 	}
-	if !bytes.Equal(img[0x1001:0x1001+len(suf)], make([]byte, len(suf))) {
-		t.Error("ending not blanked")
+	// The entry points at an empty string (the NUL after the ending), length 0; the ending itself is untouched.
+	ptr := binary.LittleEndian.Uint64(img[0x2000:])
+	if ptr != base+0x1001+uint64(len(suf)) || img[ptr-base] != 0 || binary.LittleEndian.Uint64(img[0x2008:]) != 0 {
+		t.Errorf("entry after Apply: %x %d", ptr, binary.LittleEndian.Uint64(img[0x2008:]))
 	}
-	if binary.LittleEndian.Uint64(img[0x2008:]) != 0 || binary.LittleEndian.Uint64(img[0x2108:]) != 99 {
-		t.Error("wrong length fields changed")
+	if !bytes.Equal(img[0x1000:0x2000], rdata) {
+		t.Error("the ending (in .rdata) was changed")
 	}
-	if !bytes.Contains(img, append([]byte("us"), suf...)) {
-		t.Error("the longer name was changed")
+	if binary.LittleEndian.Uint64(img[0x2108:]) != 99 {
+		t.Error("the wrong entry changed")
 	}
-	// Logged in: the original bytes go back, exactly.
-	s, l = pp.Restore(mem)
-	if s != 1 || l != 1 {
-		t.Fatalf("restored %d endings, %d lengths", s, l)
+	// A second look finds the changed entry again.
+	if again := FindPortal(img, base); len(again.Entries) != 1 || again.Entries[0] != pp.Entries[0] {
+		t.Errorf("after Apply: %+v", again.Entries)
 	}
-	if !bytes.Equal(img[0x1001:0x1001+len(suf)], suf) || binary.LittleEndian.Uint64(img[0x2008:]) != uint64(len(suf)) {
-		t.Error("check not put back")
+	// Logged in: the entry goes back exactly.
+	if n := pp.Restore(mem); n != 1 {
+		t.Fatalf("restored %d entries", n)
 	}
-	if FindPortal(img, base).Suffixes[0] != base+0x1001 {
-		t.Error("the restored check isn't found again for the next login")
+	if binary.LittleEndian.Uint64(img[0x2000:]) != base+0x1001 || binary.LittleEndian.Uint64(img[0x2008:]) != 18 {
+		t.Error("entry not put back")
 	}
 	if FindPortal(make([]byte, 64), base).Found() {
 		t.Error("found a portal in an empty image")
