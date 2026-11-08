@@ -360,7 +360,7 @@ func TargetFor(exe string) (Target, error) {
 	contents := filepath.Dir(macos)
 	app := filepath.Dir(contents)
 	if filepath.Base(macos) == "MacOS" && filepath.Base(contents) == "Contents" && strings.HasSuffix(app, ".app") {
-		if strings.Contains(app, "/AppTranslocation/") {
+		if strings.Contains(filepath.ToSlash(app), "/AppTranslocation/") {
 			return Target{}, fmt.Errorf("%w: macOS is running it from a temporary copy; move \"%s\" to "+
 				"Applications (or any folder) and open it from there", ErrCantReplace, filepath.Base(app))
 		}
