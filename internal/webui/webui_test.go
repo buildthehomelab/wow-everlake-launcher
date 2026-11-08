@@ -99,7 +99,45 @@ func TestRunValidation(t *testing.T) {
 		t.Errorf("GET on run: %d", res.StatusCode)
 	}
 	// play with no Play action set reports it, not a crash.
-	post(t, ts.URL+"/run?name=play")
+	res, _ = http.Post(ts.URL+"/run?name=play", "application/json", strings.NewReader("{}"))
+	res.Body.Close()
+	// Play only takes JSON (a cross-site form post can't send that without a preflight).
+	res, _ = http.Post(ts.URL+"/run?name=play", "text/plain", strings.NewReader(`{"login_host":"x"}`))
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnsupportedMediaType {
+		t.Errorf("text/plain play: %d", res.StatusCode)
+	}
+}
+
+func TestLocalOnly(t *testing.T) {
+	ts := httptest.NewServer(New(t.TempDir(), "x", Actions{}).Handler())
+	defer ts.Close()
+	for _, c := range []struct {
+		host, origin string
+		want         int
+	}{
+		{"", "", http.StatusOK},
+		{"", ts.URL, http.StatusOK},
+		{"", "https://evil.example", http.StatusForbidden},
+		{"evil.example", "", http.StatusForbidden},
+		{"localhost:1234", "", http.StatusOK},
+	} {
+		req, _ := http.NewRequest("GET", ts.URL+"/status", nil)
+		if c.host != "" {
+			req.Host = c.host
+		}
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != c.want {
+			t.Errorf("host %q origin %q: %d, want %d", c.host, c.origin, res.StatusCode, c.want)
+		}
+	}
 }
 
 func get(t *testing.T, url string) string {
@@ -135,5 +173,46 @@ func waitFor(t *testing.T, lines <-chan string, want string) {
 		case <-time.After(3 * time.Second):
 			t.Fatalf("timed out waiting for %q", want)
 		}
+	}
+}
+
+func TestPlayGetsSignInAndRealmStatus(t *testing.T) {
+	got := make(chan PlayInput, 1)
+	srv := New(t.TempDir(), "x", Actions{
+		Play: func(ctx context.Context, in PlayInput, log func(string)) error {
+			got <- in
+			return nil
+		},
+		Realm: func() RealmStatus { return RealmStatus{LoginHost: "login.realm.example.com", Supported: true} },
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	var s statusResp
+	json.Unmarshal([]byte(get(t, ts.URL+"/status")), &s)
+	if s.Realm.LoginHost != "login.realm.example.com" || !s.Realm.Supported {
+		t.Errorf("realm in status: %+v", s.Realm)
+	}
+	body := `{"login_host":"login.realm.example.com","email":"a@b.c","password":"pw"}`
+	res, err := http.Post(ts.URL+"/run?name=play", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("play: %d", res.StatusCode)
+	}
+	select {
+	case in := <-got:
+		if in != (PlayInput{LoginHost: "login.realm.example.com", Email: "a@b.c", Password: "pw"}) {
+			t.Errorf("play got %+v", in)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("play never ran")
+	}
+	res, _ = http.Post(ts.URL+"/run?name=play", "application/json", strings.NewReader("{nope"))
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad body: %d", res.StatusCode)
 	}
 }

@@ -29,8 +29,9 @@ Work in progress. What works today:
   space). Nothing is removed until the update has succeeded. The game's own storage and anything it added are left
   alone. A trial install (`--no-data`, `--max-priority`, `--data-limit-mb`) never prunes data, so it can't delete
   what a fuller install fetched.
-- **Not yet:** connecting to our realm (login, the server key). `install` and `start` get the stock client running;
-  joining an Everlake realm is done elsewhere (on macOS, `wow-project-everlake`'s `everlake-client.sh`).
+- **Joining a realm (Windows):** `play` signs in to the realm's login server and starts the game logged in, with the
+  two in-memory changes the stock client needs to talk to it (see [Joining a realm](#joining-a-realm)). On macOS the
+  game is hardened against this, so joining a realm stays with `wow-project-everlake`'s `everlake-client.sh`.
 
 ## Platforms
 
@@ -57,16 +58,42 @@ go build -o everlake-launcher ./cmd/everlake-launcher
 ./everlake-launcher pin                                     # what's live now, as a pin to review
 ./everlake-launcher start   --dir ~/Everlake                # starts the game the way Battle.net would (-uid wowf)
 ./everlake-launcher ui      --dir ~/Everlake                # a local page with Install / Verify / Play buttons
+everlake-launcher.exe play --dir C:\Everlake --login-host login.realm.example.com --email you@example.com
 ```
 
 `ui` is the same jobs with buttons instead of typed commands: it opens a page in your browser (served only on your
 own machine, `127.0.0.1`) showing whether the client is intact, with **Install / update**, **Verify** and **Play**,
-and the launcher's output live. It still doesn't join a realm — `start`/`Play` get you to the game's own login
-screen, no further.
+and the launcher's output live. On Windows the page also has the sign-in fields: with a login server filled in,
+**Play** joins that realm like `play` does; left empty, it starts the game on its own like `start`.
 
 `--tags` picks platform, architecture, locale and region (default: this machine, `enUS`, `US`). The region matters:
 the Mac game binary for CN differs from everyone else's. `--max-priority` and `--data-limit-mb` cut the data stage
 short for trial runs.
+
+## Joining a realm
+
+`play` (Windows) does what Battle.net does for Blizzard's realms, against a TrinityCore login server:
+
+1. Signs in with your email and password (asked for; or `EVERLAKE_PASSWORD`) over HTTPS on port 8081, and gets a
+   login ticket and your game account. The login server needs a certificate your PC trusts (a real one, or pass
+   `--ca` with the realm's own CA).
+2. Leaves the ticket where the game reads it when started with `-launcherlogin`: `HKEY_CURRENT_USER\Software\Blizzard
+   Entertainment\Battle.net\Launch Options\WoW` (`WEB_TOKEN`, encrypted for your Windows user; `GAME_ACCOUNT`;
+   `CONNECTION_STRING`). Battle.net rewrites these whenever it starts WoW itself.
+3. Writes `_forever_\WTF\Everlake.wtf` (your `Config.wtf` plus the login server) and starts
+   `Wow.exe -uid wowf -launcherlogin -config Everlake.wtf`.
+4. Changes two things in the running game's memory. The files on disk are never touched.
+   - **The login name.** The client only logs in at names ending in one of Blizzard's domains (a table in its data,
+     `.actual.battle.net` first). The ending is blanked, so a realm can use a name of its own. Not needed, and not
+     done, for a `*.actual.battle.net` login name.
+   - **The server key.** When you enter the world the realm signs a message the client checks against 12 public keys
+     it keeps in memory. Entry 8 (the server's `Network.EnterEncryptedModeRegionGroup`) gets
+     the realm's key: TrinityCore's stock key unless `--server-key` says otherwise. The client can rebuild that
+     store, so the launcher keeps watching until the game closes: **leave the launcher running while you play.**
+
+The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password never is.
+The patching follows jibay442/forever_docker (key store) and Arctium's launcher (login name); `wow-project-everlake`'s
+`client/macos/keypatch.c` does the same from inside the game on macOS.
 
 ## How it checks files
 
@@ -88,6 +115,7 @@ without being decrypted.
 
 ```sh
 go test ./...                                   # format parsers + a whole install against a fake CDN
+                                                # (on Windows also: both game patches on a stand-in game process)
 EVERLAKE_LIVE=1 go test -run Live ./internal/tact     # reads the real pinned build from Blizzard's CDN (~2 MB)
 EVERLAKE_LIVE=full go test -run Live ./internal/tact  # also the encoding file (~135 MB)
 ```
