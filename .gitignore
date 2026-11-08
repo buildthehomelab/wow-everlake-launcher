@@ -3,3 +3,5 @@
 /dist/
 /everlake-launcher
 /everlake-launcher.exe
+# written by scripts/winres during a Windows build
+*.syso

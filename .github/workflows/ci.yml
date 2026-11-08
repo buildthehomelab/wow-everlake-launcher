@@ -43,6 +43,8 @@ jobs:
       - name: the window build runs commands from a terminal
         if: runner.os == 'Windows'
         run: |
+          # With the icon, version information and manifest, as released: a bad manifest stops it starting at all.
+          go run ./scripts/winres -version gui-ok -name el.exe -out cmd/everlake-launcher/rsrc_windows_amd64.syso
           go build -ldflags "-H=windowsgui -X main.version=gui-ok" -o el.exe ./cmd/everlake-launcher
           # Output redirected to a file: the handles it's given are used, and the caller can wait for it.
           $p = Start-Process -FilePath ./el.exe -ArgumentList version -Wait -PassThru -NoNewWindow `

@@ -44,6 +44,7 @@ func run(o Options) error {
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
 			Title: o.Title, Width: uint(o.Width * scale / 96), Height: uint(o.Height * scale / 96), Center: true,
+			IconId: 1, // the .exe's icon (internal/winres.IconID); without one Windows shows its default
 		},
 	})
 	if w == nil {

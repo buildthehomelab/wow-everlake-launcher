@@ -1,0 +1,74 @@
+<!doctype html>
+<!-- The launcher's app icon: the window's spell burst on a dark tile, in the fire school's colours. This page is the
+     source; icon-windows.png and icon-macos.png are rendered from it at 1024 x 1024 with a transparent background:
+
+       chrome --headless=new --hide-scrollbars --window-size=1024,1024 --default-background-color=00000000 \
+              --screenshot=assets/icon-windows.png "file://$PWD/assets/icon.html?windows"
+       chrome ... --screenshot=assets/icon-macos.png "file://$PWD/assets/icon.html?macos"
+
+     windows: the tile fills the square, as Windows icons do. macos: Apple's grid, an 824 px tile with room around it. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1024px; height: 1024px; background: transparent; overflow: hidden; }
+  .tile {
+    position: absolute;
+    box-sizing: border-box;
+    overflow: hidden;
+    border: 22px solid #0a0912;
+    background: radial-gradient(circle at 46% 58%, #4a1e17 0%, #2a1219 38%, #130d17 72%);
+  }
+  .windows .tile { left: 24px; top: 24px; width: 976px; height: 976px; border-radius: 196px; }
+  .macos .tile { left: 100px; top: 100px; width: 824px; height: 824px; border-radius: 186px; border-width: 18px; }
+  svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .halo { fill: #f0531c; opacity: .9; }
+  .k1 { fill: #f0531c; }
+  .k2 { fill: #ffb53b; }
+  .k3 { fill: #fff4d6; }
+  .rim { fill: none; stroke: #0a0912; stroke-width: 9; stroke-linejoin: round; }
+</style>
+</head>
+<body>
+<div class="tile"><svg id="art" viewBox="96 50 680 680"></svg></div>
+<script>
+  // The same burst the launcher window draws (internal/webui/page.html), frame 1, with an ink rim for small sizes.
+  document.body.className = location.search.indexOf("macos") >= 0 ? "macos" : "windows";
+  const NS = "http://www.w3.org/2000/svg", TRAIL = -Math.PI / 3;
+  function rng(seed) { return () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }; }
+  function node(name, attrs) { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function turn(from, to) { let d = to - from; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; }
+  function flame(r, cx, cy, radius, tongues, reach) {
+    const pts = [], step = Math.PI * 2 / tongues, start = r() * step;
+    for (let i = 0; i < tongues; i++) {
+      const a = start + i * step + (r() - 0.5) * step * 0.25, mid = a + step / 2;
+      let align = Math.max(0, Math.cos(mid - TRAIL)); align *= align;
+      const vr = radius * (0.9 + r() * 0.12);
+      const tr = radius * (1 + reach * (0.1 + r() * 0.25 + align * (1.5 + r() * 1.1)));
+      const ta = mid + turn(mid, TRAIL) * (0.3 + 0.35 * (1 - align)) * Math.min(1, tr / radius - 1);
+      pts.push([cx + Math.cos(a) * vr, cy + Math.sin(a) * vr], [cx + Math.cos(ta) * tr, cy + Math.sin(ta) * tr]);
+    }
+    let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+    for (let j = 0; j < pts.length; j += 2) {
+      const v = pts[j], t = pts[j + 1], nv = pts[(j + 2) % pts.length];
+      const c1 = [(v[0] + t[0]) / 2 + (t[1] - v[1]) * 0.22, (v[1] + t[1]) / 2 - (t[0] - v[0]) * 0.22];
+      const c2 = [(t[0] + nv[0]) / 2 + (nv[1] - t[1]) * 0.12, (t[1] + nv[1]) / 2 - (nv[0] - t[0]) * 0.12];
+      d += " Q" + c1[0].toFixed(1) + " " + c1[1].toFixed(1) + " " + t[0].toFixed(1) + " " + t[1].toFixed(1);
+      d += " Q" + c2[0].toFixed(1) + " " + c2[1].toFixed(1) + " " + nv[0].toFixed(1) + " " + nv[1].toFixed(1);
+    }
+    return d + " Z";
+  }
+  const svg = document.getElementById("art"), cx = 360, cy = 470, r = rng(4021);
+  const defs = node("defs", {}), glow = node("filter", { id: "glow", x: "-50%", y: "-50%", width: "200%", height: "200%" });
+  glow.appendChild(node("feGaussianBlur", { stdDeviation: "22" }));
+  defs.appendChild(glow);
+  svg.appendChild(defs);
+  const outer = flame(r, cx, cy, 150, 12, 1.0);
+  svg.appendChild(node("path", { "class": "halo", d: outer, filter: "url(#glow)" }));
+  svg.appendChild(node("path", { "class": "rim", d: outer }));
+  svg.appendChild(node("path", { "class": "k1", d: outer }));
+  svg.appendChild(node("path", { "class": "k2", d: flame(r, cx - 6, cy + 6, 112, 10, 0.85) }));
+  svg.appendChild(node("path", { "class": "k3", d: flame(r, cx - 12, cy + 12, 70, 9, 0.6) }));
+</script>
+</body>
+</html>
