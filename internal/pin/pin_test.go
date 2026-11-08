@@ -7,7 +7,7 @@ import (
 
 func TestDefaultPin(t *testing.T) {
 	p := Default()
-	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wow_camelot" || p.BuildID != 70790 {
+	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wowf" || p.BuildID != 70790 {
 		t.Errorf("default pin = %+v", p)
 	}
 }

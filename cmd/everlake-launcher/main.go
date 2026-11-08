@@ -4,6 +4,7 @@
 //	everlake-launcher verify  --dir <folder> [--tags ...]
 //	everlake-launcher show    [--tags ...]          the pinned build: tags and sizes, nothing written
 //	everlake-launcher pin     [--product wowf]      prints a pin for the build that is live now (to review, not to follow)
+//	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
 package main
 
 import (
@@ -12,7 +13,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -44,6 +47,8 @@ func main() {
 		err = cmdShow(ctx, os.Args[2:])
 	case "pin":
 		err = cmdPin(ctx, os.Args[2:])
+	case "start":
+		err = cmdStart(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -62,6 +67,7 @@ func usage() {
   everlake-launcher verify  --dir <folder>          (checks what install fetched; --tags etc. override)
   everlake-launcher show    [--tags ...]
   everlake-launcher pin     [--product wowf] [--region us]
+  everlake-launcher start   --dir <folder> [-- game arguments]
 `)
 	os.Exit(2)
 }
@@ -307,4 +313,34 @@ func cmdPin(ctx context.Context, args []string) error {
 	out, _ := json.MarshalIndent(p, "", "  ")
 	fmt.Println(string(out))
 	return nil
+}
+
+// cmdStart starts the installed game with the arguments Battle.net would give it (-uid <product>), plus any after
+// "--". It doesn't log in anywhere: the game shows its own login screen.
+func cmdStart(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	dir := fs.String("dir", "", "install folder (required)")
+	fs.Parse(args)
+	if *dir == "" {
+		return fmt.Errorf("start: --dir is required")
+	}
+	st, err := install.ReadState(*dir)
+	if err != nil {
+		return fmt.Errorf("%s: %w", *dir, install.ErrNoInstall)
+	}
+	p := st.Pin
+	exe := filepath.Join(*dir, p.GameFolder, "Wow.exe")
+	if runtime.GOOS == "darwin" {
+		exe = filepath.Join(*dir, p.GameFolder, "World of Warcraft.app", "Contents", "MacOS", "World of Warcraft")
+	}
+	if _, err := os.Stat(exe); err != nil {
+		return fmt.Errorf("no game in %s: run install first", *dir)
+	}
+	cmd := exec.Command(exe, append(p.StartArgs(), fs.Args()...)...)
+	cmd.Dir = filepath.Join(*dir, p.GameFolder)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	logf("started %s %s (process %d)", exe, strings.Join(cmd.Args[1:], " "), cmd.Process.Pid)
+	return cmd.Process.Release()
 }
