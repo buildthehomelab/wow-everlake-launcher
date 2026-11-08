@@ -24,6 +24,10 @@
            background:var(--card); color:var(--fg); cursor:pointer; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button:disabled { opacity:.5; cursor:default; }
+  .fields { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-bottom:12px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+  input { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px;
+          padding:8px 10px; min-width:0; }
   pre { background:#0b0d10; color:#d6deeb; border-radius:8px; padding:12px; height:300px; overflow:auto; margin:0;
         font:12px/1.5 ui-monospace, monospace; white-space:pre-wrap; word-break:break-word; }
   @media (prefers-color-scheme: light) { pre { background:#0d1117; } }
@@ -37,6 +41,16 @@
   <div class="card">
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">Checking…</span></div>
     <div class="note" id="statusNote"></div>
+  </div>
+
+  <div class="card" id="realmCard">
+    <div class="fields">
+      <label>Login server<input id="loginHost" placeholder="login.realm.example.com" autocomplete="off"></label>
+      <label>Email<input id="email" type="email" autocomplete="username"></label>
+      <label>Password<input id="password" type="password" autocomplete="current-password"></label>
+    </div>
+    <div class="note" id="realmNote">Play signs in and joins the realm. Leave the login server empty to start the game
+      on its own.</div>
   </div>
 
   <div class="card buttons">
@@ -54,6 +68,7 @@
   const $ = id => document.getElementById(id);
   const log = $("log");
   let busy = false;
+  let filled = false;
 
   function setButtons() {
     for (const id of ["play", "install", "verify"]) $(id).disabled = busy;
@@ -65,6 +80,15 @@
       $("sub").textContent = (s.version ? "WoW Forever " + s.version + " — " : "") + s.dir;
       busy = !!s.busy;
       setButtons();
+      if (!filled && s.realm) {
+        filled = true;
+        $("loginHost").value = s.realm.login_host || "";
+        $("email").value = s.realm.email || "";
+        if (!s.realm.supported) {
+          $("realmNote").textContent = "Joining a realm from the launcher works on Windows only for now; on macOS "
+            + "Play starts the game on its own.";
+        }
+      }
       const dot = $("dot");
       if (s.busy) {
         dot.className = "dot";
@@ -93,7 +117,13 @@
   async function run(name) {
     if (busy) return;
     log.textContent = "";
-    const res = await fetch("run?name=" + name, { method: "POST" });
+    const opts = { method: "POST" };
+    if (name === "play") {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = JSON.stringify({ login_host: $("loginHost").value.trim(), email: $("email").value.trim(),
+                                   password: $("password").value });
+    }
+    const res = await fetch("run?name=" + name, opts);
     if (!res.ok) { log.textContent = await res.text(); return; }
     busy = true; setButtons(); refresh();
   }

@@ -8,7 +8,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,13 +20,29 @@ import (
 //go:embed page.html
 var files embed.FS
 
-// Actions are the launcher jobs the page triggers. Install and Verify get a log function to stream lines to the
-// page; Play starts the game and returns its process id. They are injected so the package needs no network of its
-// own and can be tested with fakes.
+// Actions are the launcher jobs the page triggers. Each gets a log function to stream lines to the page; lines
+// logged after a job ends (the running game's patches) still reach the page. Play gets what the player typed. They
+// are injected so the package needs no network of its own and can be tested with fakes.
 type Actions struct {
 	Install func(ctx context.Context, log func(string)) error
 	Verify  func(ctx context.Context, log func(string)) error
-	Play    func() (int, error)
+	Play    func(ctx context.Context, in PlayInput, log func(string)) error
+	// Realm reports the saved realm settings, to fill in the page's sign-in fields.
+	Realm func() RealmStatus
+}
+
+// PlayInput is the sign-in the page sends with Play. An empty LoginHost starts the game without joining a realm.
+type PlayInput struct {
+	LoginHost string `json:"login_host"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+}
+
+// RealmStatus is what the page shows about joining a realm.
+type RealmStatus struct {
+	LoginHost string `json:"login_host"`
+	Email     string `json:"email"`
+	Supported bool   `json:"supported"` // false where the launcher can't join a realm (macOS for now)
 }
 
 // Server is the launcher's local page.
@@ -53,7 +71,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.status)
 	mux.HandleFunc("/run", s.run)
 	mux.HandleFunc("/events", s.events)
-	return mux
+	return localOnly(mux)
+}
+
+// localOnly turns away requests another web page could make: a Host that isn't a loopback name (DNS rebinding) and
+// a request from a page of another origin.
+func localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+			http.Error(w, "this page answers on the loopback address only", http.StatusForbidden)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
+			http.Error(w, "requests from other pages are refused", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
@@ -67,10 +106,11 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusResp struct {
-	Dir       string `json:"dir"`
-	Version   string `json:"version"`
-	Installed bool   `json:"installed"`
-	Busy      string `json:"busy"`
+	Dir       string      `json:"dir"`
+	Version   string      `json:"version"`
+	Installed bool        `json:"installed"`
+	Busy      string      `json:"busy"`
+	Realm     RealmStatus `json:"realm"`
 	Quick     struct {
 		Checked bool   `json:"checked"`
 		OK      bool   `json:"ok"`
@@ -86,6 +126,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	resp.Busy = s.busy
 	s.mu.Unlock()
+	if s.act.Realm != nil {
+		resp.Realm = s.act.Realm()
+	}
 	if _, err := install.ReadState(s.dir); err == nil {
 		resp.Installed = true
 		if rep, err := install.QuickVerify(s.dir); err == nil {
@@ -109,6 +152,18 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown job", http.StatusBadRequest)
 		return
 	}
+	var in PlayInput
+	if name == "play" {
+		// JSON only: a browser won't send that cross-origin without asking first, unlike a form or text/plain post.
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "play takes application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
+			http.Error(w, "bad sign-in: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	s.mu.Lock()
 	if s.busy != "" {
 		busy := s.busy
@@ -125,7 +180,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	s.broadcast(fmt.Sprintf("--- %s ---", name))
 
 	go func() {
-		err := s.do(name)
+		err := s.do(name, in)
 		if err != nil {
 			s.broadcast("error: " + err.Error())
 		}
@@ -137,7 +192,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) do(name string) error {
+func (s *Server) do(name string, in PlayInput) error {
 	ctx := context.Background()
 	switch name {
 	case "install":
@@ -154,12 +209,7 @@ func (s *Server) do(name string) error {
 		if s.act.Play == nil {
 			return fmt.Errorf("play isn't available")
 		}
-		pid, err := s.act.Play()
-		if err != nil {
-			return err
-		}
-		s.broadcast(fmt.Sprintf("started the game (process %d)", pid))
-		return nil
+		return s.act.Play(ctx, in, s.broadcast)
 	}
 	return nil
 }
