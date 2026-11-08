@@ -518,7 +518,7 @@ func (m *Mirror) passThrough(w http.ResponseWriter, r *http.Request, cdnPath, re
 	defer func() { <-m.passSem }()
 	var last error
 	for i, host := range m.Upstream {
-		url := "http://" + host + "/" + cdnPath + "/" + rest
+		url := cdn.Base(host) + "/" + cdnPath + "/" + rest
 		req, err := http.NewRequestWithContext(ctx, r.Method, url, nil)
 		if err != nil {
 			last = err

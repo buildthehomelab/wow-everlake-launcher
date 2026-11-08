@@ -1,6 +1,7 @@
 // Package cdn fetches files from Blizzard's CDN (or a mirror laid out the same way) and from the version server.
 //
-// CDN paths are http://<host>/<path>/<kind>/<ab>/<cd>/<key><suffix>, where kind is "config" or "data". Every call
+// CDN paths are http://<host>/<path>/<kind>/<ab>/<cd>/<key><suffix>, where kind is "config" or "data". A host may
+// name its scheme ("https://cdn.example.com", for our mirror behind a TLS proxy); without one it is http. Every call
 // tries each host in turn, with retries, and returns bytes as received: checking them is the caller's job (the
 // tact package checks everything against its hashes).
 package cdn
@@ -26,7 +27,7 @@ var ErrNotFound = errors.New("not on the CDN")
 
 // Client fetches from one CDN path on a list of hosts.
 type Client struct {
-	Hosts []string // tried in order, e.g. "level3.blizzard.com"
+	Hosts []string // tried in order, e.g. "level3.blizzard.com" or "https://cdn.example.com:8443"
 	Path  string   // e.g. "tpr/wow"
 	HTTP  *http.Client
 	Tries int // attempts per host
@@ -42,7 +43,15 @@ func New(hosts []string, path string) *Client {
 // URL is the path of a file on a host.
 func (c *Client) URL(host, kind string, key tact.Key, suffix string) string {
 	s := key.String()
-	return fmt.Sprintf("http://%s/%s/%s/%s/%s/%s%s", host, c.Path, kind, s[:2], s[2:4], s, suffix)
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%s%s", Base(host), c.Path, kind, s[:2], s[2:4], s, suffix)
+}
+
+// Base is a host's URL without a path: the host as given when it names http:// or https://, else http://host.
+func Base(host string) string {
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		return strings.TrimRight(host, "/")
+	}
+	return "http://" + host
 }
 
 // Request is one fetch. With Size > 0 it reads Size bytes at Offset (a file inside an archive); otherwise the whole
