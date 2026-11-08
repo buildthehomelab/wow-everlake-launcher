@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -575,5 +576,200 @@ func TestQuickVerify(t *testing.T) {
 
 	if _, err := QuickVerify(filepath.Join(t.TempDir(), "empty")); !errors.Is(err, ErrNoInstall) {
 		t.Errorf("quick check of an empty folder: %v", err)
+	}
+}
+
+// capture collects the launcher's log lines for a test.
+type capture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *capture) log(f string, a ...any) {
+	c.mu.Lock()
+	c.lines = append(c.lines, fmt.Sprintf(f, a...))
+	c.mu.Unlock()
+}
+
+func (c *capture) has(sub string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, l := range c.lines {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// markOldBuild edits install.json so the folder looks like it came from a different build, so the next install
+// treats it as an update.
+func markOldBuild(t *testing.T, dir string, extraFiles ...FileFP) {
+	t.Helper()
+	st, err := ReadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Pin.BuildConfig = "00000000000000000000000000000000"
+	st.Pin.Version = "1.60.1.00000"
+	st.Files = append(st.Files, extraFiles...)
+	data, _ := json.MarshalIndent(st, "", "  ")
+	os.WriteFile(filepath.Join(dir, ".everlake", "install.json"), data, 0o644)
+}
+
+func TestUpdatePrunesOldClientFiles(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A loose file the old build had and the new one doesn't.
+	old := filepath.Join(dir, "_forever_", "old-tool.exe")
+	os.WriteFile(old, []byte("stale"), 0o644)
+	markOldBuild(t, dir, FileFP{Path: "_forever_/old-tool.exe", Size: 5, ModNS: 1})
+
+	var cap capture
+	rep, err := f.run(t, dir, func(o *Options) { o.Log = cap.log })
+	if err != nil || rep.Failed() {
+		t.Fatalf("update: %+v %v", rep, err)
+	}
+	if !cap.has("updating Forever") {
+		t.Error("no update message")
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("old loose file kept: %v", err)
+	}
+	if rep.PrunedFiles != 1 {
+		t.Errorf("pruned %d files, want 1", rep.PrunedFiles)
+	}
+	// The real client files are still there.
+	if _, err := os.Stat(filepath.Join(dir, "_forever_", "Utils", "readme.txt")); err != nil {
+		t.Error("a real loose file was removed")
+	}
+	if r, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err != nil || r.Failed() {
+		t.Fatalf("verify after update: %+v %v", r, err)
+	}
+}
+
+// addOrphan stores a file that no manifest lists, in its own archive, and returns its key.
+func addOrphan(t *testing.T, dir string) tact.Key {
+	t.Helper()
+	st, err := casc.Open(filepath.Join(dir, "Data", "data"), filepath.Join(dir, ".everlake", "archives.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, e := tacttest.Plain([]byte("an orphan from an older build that nothing lists any more"))
+	if err := st.Add(e, blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func TestUpdatePrunesOldData(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil { // full data install
+		t.Fatal(err)
+	}
+	orphan := addOrphan(t, dir)
+	if !stored(t, dir, orphan) {
+		t.Fatal("orphan not stored")
+	}
+	markOldBuild(t, dir)
+
+	rep, err := f.run(t, dir, nil)
+	if err != nil || rep.Failed() {
+		t.Fatalf("update: %+v %v", rep, err)
+	}
+	if rep.PrunedData < 1 || rep.Reclaimed == 0 {
+		t.Errorf("pruned %d data entries, reclaimed %d bytes", rep.PrunedData, rep.Reclaimed)
+	}
+	if stored(t, dir, orphan) {
+		t.Error("orphan data kept after update")
+	}
+	// Real data survives.
+	if !stored(t, dir, f.data["mac-art"]) {
+		t.Error("real data pruned")
+	}
+	if r, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err != nil || r.Failed() {
+		t.Fatalf("verify after update: %+v %v", r, err)
+	}
+}
+
+func TestUpdateLeavesDataOnLimitedInstall(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	orphan := addOrphan(t, dir)
+	markOldBuild(t, dir)
+	// A limited install must not prune data (a fuller install may have fetched more than this run wants).
+	rep, err := f.run(t, dir, func(o *Options) { o.MaxPriority = intp(0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.PrunedData != 0 {
+		t.Errorf("limited install pruned %d data entries", rep.PrunedData)
+	}
+	if !stored(t, dir, orphan) {
+		t.Error("limited install removed data it shouldn't")
+	}
+}
+
+func intp(n int) *int { return &n }
+
+func TestUpdateKeepsPlayerFiles(t *testing.T) {
+	f := newFakeBuild(t)
+	dir := t.TempDir()
+	if _, err := f.run(t, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Files the game and the player create in the game folder once it has run.
+	player := []string{
+		filepath.Join(dir, "_forever_", "WTF", "Config.wtf"),
+		filepath.Join(dir, "_forever_", "Interface", "AddOns", "MyAddon", "MyAddon.lua"),
+		filepath.Join(dir, "_forever_", "Logs", "Connection.log"),
+		filepath.Join(dir, "_forever_", "Screenshots", "shot.jpg"),
+	}
+	makePlayerFiles := func() {
+		for _, p := range player {
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			os.WriteFile(p, []byte("the player's own data"), 0o644)
+		}
+	}
+	makePlayerFiles()
+
+	// The recorded fingerprints must never include the player's files.
+	noPlayerFilesRecorded := func() {
+		st, err := ReadState(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fp := range st.Files {
+			for _, bad := range []string{"WTF/", "AddOns", "Logs/", "Screenshots"} {
+				if strings.Contains(fp.Path, bad) {
+					t.Errorf("install.json records a player file: %s", fp.Path)
+				}
+			}
+		}
+	}
+	// Two updates in a row — the reviewer's trigger: the second update is where a walk-based fingerprint would have
+	// recorded, then deleted, the player's files.
+	for i := 0; i < 2; i++ {
+		noPlayerFilesRecorded()
+		markOldBuild(t, dir)
+		if rep, err := f.run(t, dir, nil); err != nil || rep.Failed() {
+			t.Fatalf("update %d: %+v %v", i, rep, err)
+		}
+		for _, p := range player {
+			if _, err := os.Stat(p); err != nil {
+				t.Fatalf("update %d removed the player file %s", i, p)
+			}
+		}
+		makePlayerFiles() // the player keeps playing between updates
 	}
 }
