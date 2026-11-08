@@ -15,16 +15,15 @@ import (
 )
 
 // The stand-in game: the test binary started again with EVERLAKE_PATCH_HELPER=1. Like the client, it holds the
-// login-name ending as a string of its own in its data, with a table entry {pointer, 18} pointing at it, and its
-// built-in keys in its data; a while after it starts it builds its key store from them, on the heap. It writes what it
-// saw to EVERLAKE_PATCH_RESULT.
+// login-name ending as a string of its own in its data, with a table entry {pointer, 18} pointing at it. Once the check
+// is off it "logs in": it opens a key store, and expects the server key in it and the check put back. It writes what
+// it saw to EVERLAKE_PATCH_RESULT.
 var (
 	helperName  = [20]byte{0, '.', 'a', 'c', 't', 'u', 'a', 'l', '.', 'b', 'a', 't', 't', 'l', 'e', '.', 'n', 'e', 't', 0}
 	helperTable = struct {
 		suffix *byte
 		length uint64
 	}{&helperName[1], 18}
-	helperKeys [count][32]byte // filled in by runHelper, as the game's start-up unpacks them
 )
 
 func TestMain(m *testing.M) {
@@ -35,35 +34,35 @@ func TestMain(m *testing.M) {
 }
 
 func runHelper(result string) int {
-	for e := range helperKeys {
-		hex.Decode(helperKeys[e][:], []byte(knownKeys[e]))
+	fail := func(why string) int {
+		os.WriteFile(result, []byte("FAIL "+why), 0o644)
+		return 1
 	}
-	time.Sleep(time.Second) // the player is still at the login screen
-	// Logging in: the key store is built from the built-in keys. The launcher must not touch it after this.
+	blank := func() bool { return bytes.Equal(helperName[1:19], make([]byte, 18)) && helperTable.length == 0 }
+	restored := func() bool { return bytes.Equal(helperName[1:19], portalSuffix()) && helperTable.length == 18 }
+	// The login screen: the check has to be off before the player logs in.
+	for end := time.Now().Add(30 * time.Second); !blank(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(end) {
+			return fail("the login-name check was never switched off")
+		}
+	}
+	// Logging in: the game opens its key store, and the launcher writes the server key into it.
 	store := keyStore(0x7f)
-	for e := range helperKeys {
-		copy(store[e*entry+4:], helperKeys[e][:])
-	}
-	built := append([]byte(nil), store...)
 	want, _ := hex.DecodeString(StockServerKey)
-	var why string
-	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		blank := bytes.Equal(helperName[1:19], make([]byte, 18))
-		zeroed := helperTable.length == 0
-		keyed := bytes.Equal(store[7*entry+4:7*entry+36], want)
-		untouched := bytes.Equal(store, built)
-		why = fmt.Sprintf("ending blanked %v, table length zeroed %v, server key in the store %v, store untouched "+
-			"after login %v", blank, zeroed, keyed, untouched)
-		if !untouched {
-			break
-		}
-		if blank && zeroed && keyed {
-			os.WriteFile(result, []byte("OK "+why), 0o644)
-			return 0
+	for end := time.Now().Add(30 * time.Second); !bytes.Equal(store[7*entry+4:7*entry+36], want); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(end) {
+			return fail("the server key never reached the key store")
 		}
 	}
-	os.WriteFile(result, []byte("FAIL "+why), 0o644)
-	return 1
+	// Logged in: the check goes back, so the game's own data is as it was when it enters the world.
+	for end := time.Now().Add(30 * time.Second); !restored(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(end) {
+			return fail(fmt.Sprintf("the login-name check wasn't put back after login (ending %q, length %d)",
+				helperName[1:19], helperTable.length))
+		}
+	}
+	os.WriteFile(result, []byte("OK login-name check off at login, key written, check put back once logged in"), 0o644)
+	return 0
 }
 
 func TestLaunchPatchesARealProcess(t *testing.T) {
