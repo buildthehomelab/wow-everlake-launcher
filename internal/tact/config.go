@@ -1,6 +1,7 @@
 package tact
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -110,4 +111,36 @@ func ParseTable(text string) ([]map[string]string, error) {
 		return nil, fmt.Errorf("empty table")
 	}
 	return rows, nil
+}
+
+// BuildFiles lists a build's own stored files by name: encoding, root, install, download, size and the TVFS
+// manifests, each as {content key, encoded key}. Fields the build config doesn't have are left out; an encoded key
+// the config doesn't give is looked up in enc. The encoding file must name its encoded key in the config.
+func (c Config) BuildFiles(enc *Encoding) (map[string][2]Key, error) {
+	encC, encE, err := c.KeyPair("encoding")
+	if err != nil {
+		return nil, err
+	}
+	if encE.IsZero() {
+		return nil, errors.New("the build config names no encoded key for the encoding file")
+	}
+	out := map[string][2]Key{"encoding": {encC, encE}}
+	for _, name := range append([]string{"root", "install", "download", "size"}, c.VFSNames()...) {
+		if _, ok := c[name]; !ok {
+			continue
+		}
+		ck, ek, err := c.KeyPair(name)
+		if err != nil {
+			return nil, err
+		}
+		if ek.IsZero() {
+			ent, ok := enc.Lookup(ck)
+			if !ok {
+				return nil, fmt.Errorf("build file %s (%s) is not in the encoding file", name, ck)
+			}
+			ek = ent.EKeys[0]
+		}
+		out[name] = [2]Key{ck, ek}
+	}
+	return out, nil
 }

@@ -7,6 +7,7 @@
 //	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
 //	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows)
 //	everlake-launcher ui      --dir <folder>        a local page with Install / Verify / Play buttons
+//	everlake-launcher mirror  --store <folder> [--prefetch]   Everlake's own CDN (runs on the server)
 package main
 
 import (
@@ -58,6 +59,8 @@ func main() {
 		err = cmdPlay(ctx, os.Args[2:])
 	case "ui":
 		err = cmdUI(ctx, os.Args[2:])
+	case "mirror":
+		err = cmdMirror(ctx, os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -79,6 +82,8 @@ func usage() {
   everlake-launcher start   --dir <folder> [-- game arguments]
   everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>] [--server-key <hex>] [--ca <file>]
   everlake-launcher ui      --dir <folder> [--addr 127.0.0.1:PORT] [--no-open]
+  everlake-launcher mirror  --store <folder> [--overlay <folder>] [--addr :8087] [--prefetch | --prefetch-only]
+                            [--tags OSX,Windows,x86_64,arm64,enUS,US] [--rate-mb 40] [--quiet]
 `)
 	os.Exit(2)
 }

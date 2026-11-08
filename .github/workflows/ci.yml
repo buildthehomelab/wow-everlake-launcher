@@ -31,3 +31,6 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/everlake-launcher
           GOOS=darwin GOARCH=amd64 go build -o /dev/null ./cmd/everlake-launcher
           GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/everlake-launcher
+      - name: build the mirror container
+        if: runner.os == 'Linux'
+        run: docker build -t everlake-mirror . && docker run --rm everlake-mirror version

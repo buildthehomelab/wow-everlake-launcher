@@ -213,25 +213,12 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 	opts.Log("encoding file: %d content keys", r.enc.Count())
 
 	// The rest of the build's own files: manifests, root and the TVFS manifests the client looks files up with.
-	system := map[string][2]tact.Key{"encoding": {encC, encE}}
-	names := append([]string{"root", "install", "download", "size"}, r.build.VFSNames()...)
-	for _, name := range names {
-		if _, ok := r.build[name]; !ok {
-			continue
-		}
-		c, e, err := r.build.KeyPair(name)
-		if err != nil {
-			return nil, err
-		}
-		if e.IsZero() {
-			ent, ok := r.enc.Lookup(c)
-			if !ok {
-				return nil, fmt.Errorf("build file %s (%s) is not in the encoding file", name, c)
-			}
-			e = ent.EKeys[0]
-		}
-		system[name] = [2]tact.Key{c, e}
-		sys[e] = nil
+	system, err := r.build.BuildFiles(r.enc)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range system {
+		sys[k[1]] = nil
 	}
 	locate(idx, sys)
 	manifest := func(name string) ([]byte, error) {
@@ -688,8 +675,8 @@ func (r *run) looseFiles(ctx context.Context, idx []namedIndex, inst *tact.Insta
 // --- data files --------------------------------------------------------------------------------------------------
 
 const (
-	spanGap = 256 << 10 // read through gaps up to this size between wanted files in one archive
-	spanMax = 16 << 20  // largest single range request
+	spanGap = cdn.SpanGap
+	spanMax = cdn.SpanMax
 )
 
 type span struct {
