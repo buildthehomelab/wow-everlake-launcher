@@ -69,6 +69,11 @@ needs a Mac: its window uses Cocoa and WebKit through cgo, so it's built there f
 one universal binary in `Everlake Launcher.app`. A Mac build made elsewhere (without cgo) works but shows the page in
 the browser. CI builds both and keeps them as artifacts of each run.
 
+Each Windows exe carries an icon, version information (name, publisher, version) and an application manifest, which
+`scripts/winres` writes as a `.syso` just before the build; an exe without them is more likely to be taken for
+malware by Windows Defender. The icon is drawn in `assets/icon.html` and rendered to `assets/icon-windows.png` and
+`assets/icon-macos.png` (the Mac app's `AppIcon.icns` is made from the latter).
+
 Pick the platform's files with `--tags` (default: this machine). The launcher installs any platform's client from
 any platform, so a Mac can prepare a Windows folder and the other way round.
 

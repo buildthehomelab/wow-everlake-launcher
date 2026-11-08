@@ -18,10 +18,16 @@ ldflags="-s -w -X main.version=$version"
 
 case "$target" in
 windows)
+	# Each .exe carries its icon, version information and manifest (scripts/winres): a .syso in the package
+	# folder that go build links in, written for each file name and removed afterwards.
+	syso=cmd/everlake-launcher/rsrc_windows_amd64.syso
+	trap 'rm -f "$syso"' EXIT
 	# -H=windowsgui: a GUI program, so a double-click opens the window and no console with it.
+	go run ./scripts/winres -version "$version" -name everlake-launcher-windows-amd64.exe -out "$syso"
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags -H=windowsgui" \
 		-o "$out/everlake-launcher-windows-amd64.exe" ./cmd/everlake-launcher
 	# The same program as a console one: a terminal waits for it, and play can ask for the password.
+	go run ./scripts/winres -version "$version" -name everlake-launcher-cli-windows-amd64.exe -out "$syso"
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags" \
 		-o "$out/everlake-launcher-cli-windows-amd64.exe" ./cmd/everlake-launcher
 	;;
@@ -40,6 +46,14 @@ macos)
 	done
 	app="$work/Everlake Launcher.app"
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+	# The app icon, from assets/icon-macos.png (rendered from assets/icon.html) in every size macOS uses.
+	iconset=$work/AppIcon.iconset
+	mkdir "$iconset"
+	for s in 16 32 128 256 512; do
+		sips -z $s $s assets/icon-macos.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
+		sips -z $((s * 2)) $((s * 2)) assets/icon-macos.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
+	done
+	iconutil -c icns -o "$app/Contents/Resources/AppIcon.icns" "$iconset"
 	lipo -create -output "$app/Contents/MacOS/everlake-launcher" \
 		"$work/everlake-launcher-arm64" "$work/everlake-launcher-amd64"
 	cat >"$app/Contents/Info.plist" <<EOF
@@ -50,6 +64,7 @@ macos)
 	<key>CFBundleName</key><string>Everlake Launcher</string>
 	<key>CFBundleDisplayName</key><string>Everlake Launcher</string>
 	<key>CFBundleExecutable</key><string>everlake-launcher</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleIdentifier</key><string>com.buildthehomelab.everlake-launcher</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$version</string>
