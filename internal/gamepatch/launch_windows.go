@@ -91,15 +91,35 @@ func patchImage(p *Process, base, size uint64, kp *KeyPatcher, o Options, users 
 		o.Log("game image: it wasn't remapped in time; patching anyway")
 	}
 	ip := imagePatch{portalDone: !o.AnyPortal}
-	try := func() {
-		if err := p.Suspend(); err != nil {
-			o.Log("game image: suspend the game: " + err.Error())
-		} else {
-			defer p.Resume()
+	// try looks for what's still missing and writes it with the game paused. The first try pauses before it reads (the
+	// image is fresh, Arctium's order); later ones read with the game running and pause only to write, so a search
+	// that keeps coming up empty doesn't keep stopping the game.
+	try := func(pauseFirst bool) {
+		paused := false
+		pause := func() bool {
+			if paused {
+				return true
+			}
+			if err := p.Suspend(); err != nil {
+				if p.Alive() {
+					o.Log("game image: pause the game: " + err.Error())
+				}
+				return false
+			}
+			paused = true
+			return true
+		}
+		defer func() {
+			if paused {
+				p.Resume()
+			}
+		}()
+		if pauseFirst && !pause() {
+			return
 		}
 		img := p.ReadImage(base, size)
 		if !ip.portalDone {
-			if pp := FindPortal(img, base); pp.Found() {
+			if pp := FindPortal(img, base); pp.Found() && pause() {
 				s, l := pp.Apply(p)
 				o.Log(fmt.Sprintf("login name: any name allowed (%d of %d endings blanked, %d table lengths zeroed)", s,
 					len(pp.Suffixes), l))
@@ -109,7 +129,7 @@ func patchImage(p *Process, base, size uint64, kp *KeyPatcher, o Options, users 
 		if !ip.keyDone {
 			orig, ours := kp.FindBuiltIn(img, base)
 			switch {
-			case len(orig) > 0:
+			case len(orig) > 0 && pause():
 				n := kp.PatchBuiltIn(p, orig)
 				o.Log(fmt.Sprintf("server key: written over the game's built-in key for region group %d (%d of %d "+
 					"places)", kp.group, n, len(orig)))
@@ -120,7 +140,7 @@ func patchImage(p *Process, base, size uint64, kp *KeyPatcher, o Options, users 
 			}
 		}
 	}
-	try()
+	try(true)
 	if !ip.portalDone {
 		o.Log("login name: the Blizzard-domains check isn't in memory yet; still looking")
 	}
@@ -133,7 +153,7 @@ func patchImage(p *Process, base, size uint64, kp *KeyPatcher, o Options, users 
 		for end := time.Now().Add(time.Minute); (!ip.portalDone || !ip.keyDone) && time.Now().Before(end) &&
 			p.Alive(); {
 			time.Sleep(500 * time.Millisecond)
-			try()
+			try(false)
 		}
 		if !p.Alive() {
 			return
