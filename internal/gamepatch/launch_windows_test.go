@@ -38,10 +38,15 @@ func runHelper(result string) int {
 		os.WriteFile(result, []byte("FAIL "+why), 0o644)
 		return 1
 	}
-	blank := func() bool { return bytes.Equal(helperName[1:19], make([]byte, 18)) && helperTable.length == 0 }
-	restored := func() bool { return bytes.Equal(helperName[1:19], portalSuffix()) && helperTable.length == 18 }
+	name := append([]byte(nil), helperName[:]...)
+	untouched := func() bool { return bytes.Equal(helperName[:], name) } // the ending (.rdata in the game) never changes
+	blank := func() bool { return helperTable.length == 0 && *helperTable.suffix == 0 }
+	restored := func() bool { return helperTable.suffix == &helperName[1] && helperTable.length == 18 }
 	// The login screen: the check has to be off before the player logs in.
 	for end := time.Now().Add(30 * time.Second); !blank(); time.Sleep(20 * time.Millisecond) {
+		if !untouched() {
+			return fail("the ending itself was changed")
+		}
 		if time.Now().After(end) {
 			return fail("the login-name check was never switched off")
 		}
@@ -61,7 +66,11 @@ func runHelper(result string) int {
 				helperName[1:19], helperTable.length))
 		}
 	}
-	os.WriteFile(result, []byte("OK login-name check off at login, key written, check put back once logged in"), 0o644)
+	if !untouched() {
+		return fail("the ending itself was changed")
+	}
+	os.WriteFile(result, []byte("OK login-name check off at login through the table only, key written, check put "+
+		"back once logged in"), 0o644)
 	return 0
 }
 
@@ -74,13 +83,11 @@ func TestLaunchPatchesARealProcess(t *testing.T) {
 	var mu sync.Mutex
 	var logs []string
 	game, err := Launch(Options{
-		Exe:  exe,
-		Args: []string{"-test.run=^$"},
-		Env:  append(os.Environ(), "EVERLAKE_PATCH_HELPER=1", "EVERLAKE_PATCH_RESULT="+result),
-		// A Go program's image isn't remapped the way the game's protection does it: don't wait long for that.
-		UnpackWait: 300 * time.Millisecond,
-		AnyPortal:  true,
-		Log:        func(l string) { mu.Lock(); logs = append(logs, l); mu.Unlock() },
+		Exe:       exe,
+		Args:      []string{"-test.run=^$"},
+		Env:       append(os.Environ(), "EVERLAKE_PATCH_HELPER=1", "EVERLAKE_PATCH_RESULT="+result),
+		AnyPortal: true,
+		Log:       func(l string) { mu.Lock(); logs = append(logs, l); mu.Unlock() },
 	})
 	if err != nil {
 		t.Fatal(err)

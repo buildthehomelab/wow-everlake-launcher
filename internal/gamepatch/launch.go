@@ -21,9 +21,9 @@ type Options struct {
 	RegionGroup int    // the key entry the realm signs for (DefaultRegionGroup)
 	AnyPortal   bool   // switch off the client's Blizzard-domains-only check on the login name
 
-	// UnpackWait is how long to wait for the game's protection to unpack its image before patching the login name
-	// (default 15 seconds). The patch goes in as soon as the image is unpacked; after the wait it goes in anyway.
-	UnpackWait time.Duration
+	// PortalWait is how long to keep looking for the login-name check while the game's protection unpacks its image
+	// (default 2 minutes).
+	PortalWait time.Duration
 	Log        func(string)
 }
 
@@ -41,8 +41,8 @@ func (o *Options) defaults() {
 	if o.RegionGroup == 0 {
 		o.RegionGroup = DefaultRegionGroup
 	}
-	if o.UnpackWait == 0 {
-		o.UnpackWait = 15 * time.Second
+	if o.PortalWait == 0 {
+		o.PortalWait = 2 * time.Minute
 	}
 	if o.Log == nil {
 		o.Log = func(string) {}
