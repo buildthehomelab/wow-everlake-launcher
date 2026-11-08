@@ -16,107 +16,18 @@ import (
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/casc"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
-	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tacttest"
 )
 
-// fakeBuild is a whole tiny build on a fake CDN: configs, encoding (loose), one archive holding everything else.
-type fakeBuild struct {
-	cdn       *tacttest.CDN
-	pin       pin.Pin
-	macBinary []byte
-	exe       []byte
-	readme    []byte
-	data      map[string]tact.Key // name -> encoded key of the download manifest's files
-	archive   tact.Key
-	archBytes []byte
-	encE      tact.Key // the encoding file's encoded key
-}
+// fakeBuild is the tiny test build (tacttest.Build) with the launcher's helpers on it.
+type fakeBuild struct{ *tacttest.Build }
 
-func newFakeBuild(t *testing.T) *fakeBuild {
-	t.Helper()
-	f := &fakeBuild{cdn: tacttest.NewCDN(), data: map[string]tact.Key{}}
-	t.Cleanup(f.cdn.Close)
-	f.macBinary = append([]byte{0xca, 0xfe, 0xba, 0xbe}, bytes.Repeat([]byte("mac game "), 500)...)
-	f.exe = append([]byte("MZ"), bytes.Repeat([]byte("windows game "), 400)...)
-	f.readme = []byte("read me")
-
-	var archive bytes.Buffer
-	var idx []tacttest.IndexEntry
-	var rows []tacttest.EncodingRow
-	// store puts content into the archive and the encoding file, and returns its keys.
-	store := func(content []byte) (ckey, ekey tact.Key) {
-		blob, ekey := tacttest.Plain(content)
-		idx = append(idx, tacttest.IndexEntry{EKey: ekey, Size: uint32(len(blob)), Offset: uint32(archive.Len())})
-		archive.Write(blob)
-		archive.Write([]byte("gap!")) // archives aren't packed back to back on the real CDN either
-		ckey = tact.KeyOf(content)
-		rows = append(rows, tacttest.EncodingRow{CKey: ckey, EKeys: []tact.Key{ekey}, Size: uint64(len(content))})
-		return ckey, ekey
-	}
-
-	tags := []tacttest.Tag{
-		{Name: "OSX", Type: tact.TagPlatform, Entries: []int{0, 2}},
-		{Name: "Windows", Type: tact.TagPlatform, Entries: []int{1, 2}},
-		{Name: "enUS", Type: tact.TagLocale, Entries: []int{0, 1, 2}},
-	}
-	macC, _ := store(f.macBinary)
-	exeC, _ := store(f.exe)
-	readC, _ := store(f.readme)
-	install := tacttest.Install(tags, []tacttest.InstallFile{
-		{Name: `World of Warcraft.app\Contents\MacOS\World of Warcraft`, CKey: macC, Size: uint32(len(f.macBinary))},
-		{Name: `Wow.exe`, CKey: exeC, Size: uint32(len(f.exe))},
-		{Name: `Utils\readme.txt`, CKey: readC, Size: uint32(len(f.readme))},
-	})
-	var dl []tacttest.DownloadFile
-	for i, name := range []string{"mac-art", "shared-art", "windows-art"} {
-		_, e := store(bytes.Repeat([]byte(name), 300+i))
-		f.data[name] = e
-		dl = append(dl, tacttest.DownloadFile{EKey: e, Size: 1, Priority: int8(i)})
-	}
-	download := tacttest.Download(1, false, 0, 0, []tacttest.Tag{
-		{Name: "OSX", Type: tact.TagPlatform, Entries: []int{0, 1}},
-		{Name: "Windows", Type: tact.TagPlatform, Entries: []int{1, 2}},
-		{Name: "enUS", Type: tact.TagLocale, Entries: []int{0, 1, 2}},
-	}, dl)
-	instC, instE := store(install)
-	dlC, dlE := store(download)
-	rootC, _ := store([]byte("TSFM a root file"))
-	vfsC, vfsE := store([]byte("TVFS a manifest"))
-
-	encContent := tacttest.Encoding(rows)
-	encBlob, encE := tacttest.Plain(encContent)
-	f.encE = encE
-	f.cdn.Put("data", encE, "", encBlob) // the encoding file is loose on the CDN
-
-	f.archBytes = archive.Bytes()
-	idxBytes, name := tacttest.Index(idx, true)
-	f.archive = name
-	f.cdn.Put("data", name, ".index", idxBytes)
-	f.cdn.Put("data", name, "", f.archBytes)
-
-	cdnCfg := []byte("# CDN Configuration\narchives = " + name.String() + "\n")
-	cdnKey := tact.KeyOf(cdnCfg)
-	f.cdn.Put("config", cdnKey, "", cdnCfg)
-	build := []byte(fmt.Sprintf("# Build Configuration\nroot = %s\ninstall = %s %s\ndownload = %s %s\n"+
-		"encoding = %s %s\nvfs-root = %s %s\nvfs-1 = %s %s\nbuild-name = TEST-1\nbuild-uid = wowf\n",
-		rootC, instC, instE, dlC, dlE, tact.KeyOf(encContent), encE, vfsC, vfsE, vfsC, vfsE))
-	buildKey := tact.KeyOf(build)
-	f.cdn.Put("config", buildKey, "", build)
-
-	f.pin = pin.Pin{Product: "wowf", Region: "us", Version: "1.60.1.1", BuildID: 1, BuildConfig: buildKey.String(),
-		CDNConfig: cdnKey.String(), CDNPath: "tpr/test", GameFolder: "_forever_",
-		Flavor: "wowf"}
-	if err := f.pin.Check(); err != nil {
-		t.Fatal(err)
-	}
-	return f
-}
+func newFakeBuild(t *testing.T) *fakeBuild { return &fakeBuild{tacttest.NewBuild(t)} }
 
 func (f *fakeBuild) run(t *testing.T, dir string, change func(*Options)) (*Report, error) {
 	t.Helper()
-	opts := Options{Dir: dir, Pin: f.pin, CDN: cdn.New([]string{f.cdn.Host()}, f.pin.CDNPath),
+	opts := Options{Dir: dir, Pin: f.Pin, CDN: cdn.New([]string{f.CDN.Host()}, f.Pin.CDNPath),
 		Tags: []string{"OSX", "enUS"}, Jobs: 3, Log: t.Logf}
 	opts.CDN.Tries = 1
 	if change != nil {
@@ -161,8 +72,8 @@ func stored(t *testing.T, dir string, e tact.Key) bool {
 }
 
 func (f *fakeBuild) requests() int {
-	n := len(f.cdn.Requests)
-	f.cdn.Requests = nil
+	n := len(f.CDN.Requests)
+	f.CDN.Requests = nil
 	return n
 }
 
@@ -179,7 +90,7 @@ func TestInstallVerifyRepair(t *testing.T) {
 	}
 	game := filepath.Join(dir, "_forever_")
 	mac := filepath.Join(game, "World of Warcraft.app", "Contents", "MacOS", "World of Warcraft")
-	if got, _ := os.ReadFile(mac); !bytes.Equal(got, f.macBinary) {
+	if got, _ := os.ReadFile(mac); !bytes.Equal(got, f.MacBinary) {
 		t.Error("Mac binary has the wrong bytes")
 	}
 	if runtime.GOOS != "windows" { // Windows has no file modes beyond read-only
@@ -193,10 +104,10 @@ func TestInstallVerifyRepair(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(game, "Wow.exe")); err == nil {
 		t.Error("the Windows exe was installed for OSX")
 	}
-	if stored(t, dir, f.data["windows-art"]) {
+	if stored(t, dir, f.Data["windows-art"]) {
 		t.Error("Windows-only data was stored for OSX")
 	}
-	for _, e := range []tact.Key{f.data["mac-art"], f.data["shared-art"], f.encE} {
+	for _, e := range []tact.Key{f.Data["mac-art"], f.Data["shared-art"], f.EncE} {
 		if !stored(t, dir, e) {
 			t.Errorf("%s not in local storage", e)
 		}
@@ -206,14 +117,14 @@ func TestInstallVerifyRepair(t *testing.T) {
 	}
 	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
 	wantRow := fmt.Sprintf("us|1|%s|%s|||tpr/test|%s|http://%s/?maxhosts=4|OSX enUS speech?:OSX enUS text?|||1.60.1.1||wowf\n",
-		f.pin.BuildConfig, f.pin.CDNConfig, f.cdn.Host(), f.cdn.Host())
+		f.Pin.BuildConfig, f.Pin.CDNConfig, f.CDN.Host(), f.CDN.Host())
 	if !strings.HasPrefix(string(bi), "Branch!STRING:0|Active!DEC:1|") || !strings.HasSuffix(string(bi), wantRow) {
 		t.Errorf(".build.info:\n%s\nwant the row\n%s", bi, wantRow)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "Data", "indices", f.archive.String()+".index")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "Data", "indices", f.Archive.String()+".index")); err != nil {
 		t.Error("archive index not kept in Data/indices")
 	}
-	if s, err := ReadState(dir); err != nil || s.Pin.BuildConfig != f.pin.BuildConfig || s.DataLimit != 0 || s.MaxPriority != nil {
+	if s, err := ReadState(dir); err != nil || s.Pin.BuildConfig != f.Pin.BuildConfig || s.DataLimit != 0 || s.MaxPriority != nil {
 		t.Errorf("state: %+v %v", s, err)
 	}
 	f.requests()
@@ -228,9 +139,9 @@ func TestInstallVerifyRepair(t *testing.T) {
 	}
 
 	// Damage one loose file, delete another, damage a stored data file.
-	os.WriteFile(mac, append([]byte{0}, f.macBinary[1:]...), 0o755)
+	os.WriteFile(mac, append([]byte{0}, f.MacBinary[1:]...), 0o755)
 	os.Remove(filepath.Join(game, "Utils", "readme.txt"))
-	damageStored(t, dir, f.data["mac-art"])
+	damageStored(t, dir, f.Data["mac-art"])
 
 	rep, err = f.run(t, dir, func(o *Options) { o.Verify = true })
 	if err != nil {
@@ -257,9 +168,9 @@ func TestInstallVerifyRepair(t *testing.T) {
 
 func TestInstallRefusesDamagedCDN(t *testing.T) {
 	f := newFakeBuild(t)
-	bad := append([]byte{}, f.archBytes...)
+	bad := append([]byte{}, f.ArchBytes...)
 	bad[len(bad)-10] ^= 1 // inside the last file in the archive
-	f.cdn.Put("data", f.archive, "", bad)
+	f.CDN.Put("data", f.Archive, "", bad)
 	_, err := f.run(t, t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "checksum") && !strings.Contains(err.Error(), "key") {
 		t.Fatalf("damaged archive: err = %v", err)
@@ -329,14 +240,14 @@ func TestVerifyWritesNothing(t *testing.T) {
 	}
 	// Damage a config, an index and the stored encoding file, and delete .build.info: verify must report all four,
 	// and leave them as they are.
-	cfg := filepath.Join(dir, "Data", "config", f.pin.BuildConfig[:2], f.pin.BuildConfig[2:4], f.pin.BuildConfig)
+	cfg := filepath.Join(dir, "Data", "config", f.Pin.BuildConfig[:2], f.Pin.BuildConfig[2:4], f.Pin.BuildConfig)
 	b, _ := os.ReadFile(cfg)
 	os.WriteFile(cfg, append(b, '\n'), 0o644)
-	index := filepath.Join(dir, "Data", "indices", f.archive.String()+".index")
+	index := filepath.Join(dir, "Data", "indices", f.Archive.String()+".index")
 	ib, _ := os.ReadFile(index)
 	ib[0] ^= 1
 	os.WriteFile(index, ib, 0o644)
-	damageStored(t, dir, f.encE)
+	damageStored(t, dir, f.EncE)
 	bi := filepath.Join(dir, ".build.info")
 	os.Remove(bi)
 	fl := filepath.Join(dir, "_forever_", ".flavor.info")
@@ -347,13 +258,13 @@ func TestVerifyWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rep.Bad) != 4 || len(rep.Missing) != 1 || rep.Missing[0] != bi || !strings.Contains(strings.Join(rep.Bad, " "), fl) ||
-		!strings.Contains(strings.Join(rep.Bad, " "), f.encE.String()) {
+		!strings.Contains(strings.Join(rep.Bad, " "), f.EncE.String()) {
 		t.Fatalf("verify: bad %v, missing %v", rep.Bad, rep.Missing)
 	}
 	if got, _ := os.ReadFile(cfg); bytes.Equal(got, b) {
 		t.Error("verify repaired the config")
 	}
-	if stored(t, dir, f.encE) {
+	if stored(t, dir, f.EncE) {
 		t.Error("verify wrote the encoding file back")
 	}
 	if _, err := os.Stat(bi); err == nil {
@@ -392,13 +303,13 @@ func TestExecutableBit(t *testing.T) {
 
 func TestDamagedHostIsSkipped(t *testing.T) {
 	f := newFakeBuild(t)
-	good := f.cdn.Clone()
+	good := f.CDN.Clone()
 	defer good.Close()
-	bad := append([]byte{}, f.archBytes...)
+	bad := append([]byte{}, f.ArchBytes...)
 	bad[len(bad)-10] ^= 1
-	f.cdn.Put("data", f.archive, "", bad) // the first host serves a damaged archive
+	f.CDN.Put("data", f.Archive, "", bad) // the first host serves a damaged archive
 	rep, err := f.run(t, t.TempDir(), func(o *Options) {
-		o.CDN = cdn.New([]string{f.cdn.Host(), good.Host()}, f.pin.CDNPath)
+		o.CDN = cdn.New([]string{f.CDN.Host(), good.Host()}, f.Pin.CDNPath)
 		o.CDN.Tries = 1
 	})
 	if err != nil || rep.Failed() {
@@ -441,7 +352,7 @@ func TestStagedFilesMoveIntoStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	staged := filepath.Join(dir, ".everlake", "staged")
-	keys := append([]tact.Key{f.encE}, f.data["mac-art"], f.data["shared-art"])
+	keys := append([]tact.Key{f.EncE}, f.Data["mac-art"], f.Data["shared-art"])
 	for _, e := range keys {
 		data, err := st.Read(e)
 		if err != nil {
@@ -518,7 +429,7 @@ func TestBuildInfoNamesGameHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
-	if !strings.Contains(string(bi), "|cdn.example|http://cdn.example/?maxhosts=4|") || strings.Contains(string(bi), f.cdn.Host()) {
+	if !strings.Contains(string(bi), "|cdn.example|http://cdn.example/?maxhosts=4|") || strings.Contains(string(bi), f.CDN.Host()) {
 		t.Errorf(".build.info names the install's mirror:\n%s", bi)
 	}
 }
@@ -691,7 +602,7 @@ func TestUpdatePrunesOldData(t *testing.T) {
 		t.Error("orphan data kept after update")
 	}
 	// Real data survives.
-	if !stored(t, dir, f.data["mac-art"]) {
+	if !stored(t, dir, f.Data["mac-art"]) {
 		t.Error("real data pruned")
 	}
 	if r, err := f.run(t, dir, func(o *Options) { o.Verify = true }); err != nil || r.Failed() {

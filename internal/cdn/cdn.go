@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/tact"
@@ -55,7 +56,18 @@ type Request struct {
 	Size   int64
 	Max    int64 // whole-file cap; 0 means DefaultMax
 	Check  func([]byte) error
+	// Total, when set, gets the full size of the file the host named in its Content-Range answer (-1 if it named
+	// none).
+	Total *int64
 }
+
+// How the launcher groups files it wants from one archive into range requests: it reads through gaps up to SpanGap
+// bytes between them, and asks for at most SpanMax bytes at once. A mirror that prefetches with the same gap holds
+// every range a launcher asks for.
+const (
+	SpanGap = 256 << 10
+	SpanMax = 16 << 20
+)
 
 // DefaultMax caps a whole-file download (the largest WoW files are a few hundred MB).
 const DefaultMax = 2 << 30
@@ -143,6 +155,16 @@ func (c *Client) once(ctx context.Context, url string, q Request) ([]byte, int, 
 	case !ranged && resp.StatusCode == http.StatusOK:
 	default:
 		return nil, resp.StatusCode, fmt.Errorf("%s: HTTP %s", url, resp.Status)
+	}
+	if q.Total != nil {
+		*q.Total = -1
+		if resp.StatusCode == http.StatusOK {
+			*q.Total = resp.ContentLength
+		} else if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok {
+			if n, err := strconv.ParseInt(total, 10, 64); err == nil {
+				*q.Total = n
+			}
+		}
 	}
 	limit := q.Max + 1
 	if ranged {
