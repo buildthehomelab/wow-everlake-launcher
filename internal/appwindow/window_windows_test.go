@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-// TestWindowLoadsPage opens a real WebView2 window on a page whose script calls back, and closes it once it has.
+// TestWindowLoadsPage opens a real WebView2 window on a page whose script tints the title bar and calls back, and
+// closes it once it has.
 // It needs a desktop session and the WebView2 runtime, so it runs only when EVERLAKE_WINDOW_TEST=1 (CI's Windows
 // job sets it in a step of its own).
 func TestWindowLoadsPage(t *testing.T) {
@@ -29,7 +30,9 @@ func TestWindowLoadsPage(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<!doctype html><title>t</title><script>fetch("ping?ua=" + encodeURIComponent(navigator.userAgent))</script>`))
+		w.Write([]byte(`<!doctype html><title>t</title><script>` +
+			// The title-bar colour hook must be there and answer before the page reports back.
+			`everlakeFrame("#43303a").then(() => fetch("ping?ua=" + encodeURIComponent(navigator.userAgent)))</script>`))
 	})
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
