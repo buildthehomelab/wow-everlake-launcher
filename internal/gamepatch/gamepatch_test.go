@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,7 +65,7 @@ func keyStore(pad37 byte) []byte {
 	return b
 }
 
-func TestKeyStoreFoundAndPatched(t *testing.T) {
+func TestKeyStoreFound(t *testing.T) {
 	kp, err := NewKeyPatcher(StockServerKey, DefaultRegionGroup)
 	if err != nil {
 		t.Fatal(err)
@@ -83,60 +84,92 @@ func TestKeyStoreFoundAndPatched(t *testing.T) {
 	if len(stores) != 1 || stores[0].addr != mem.base+at || stores[0].state != original {
 		t.Fatalf("stores: %+v", stores)
 	}
-	if err := kp.patch(mem, stores[0].addr); err != nil {
-		t.Fatal(err)
-	}
+	// A store built from a patched built-in key counts as patched.
+	ours, _ := hex.DecodeString(StockServerKey)
+	copy(mem.data[at+7*entry+4:], ours)
 	if st := kp.state(mem, mem.base+at); st != patched {
-		t.Fatalf("state after patch: %v", st)
-	}
-	got := mem.Read(mem.base+at+uint64(7*entry+4), 32)
-	want, _ := hex.DecodeString(StockServerKey)
-	if !bytes.Equal(got, want) {
-		t.Errorf("entry 8 holds %x", got)
-	}
-	// The other entries are untouched.
-	if !bytes.Equal(mem.Read(mem.base+at+4, 32), k1) {
-		t.Error("entry 1 changed")
+		t.Fatalf("state with our key: %v", st)
 	}
 }
 
-func TestWatchPatchesLateStoreAndPutsKeyBack(t *testing.T) {
+func TestBuiltInKey(t *testing.T) {
+	kp, _ := NewKeyPatcher(StockServerKey, DefaultRegionGroup)
+	const base = 0x140000000
+	img := make([]byte, 0x4000)
+	k8, _ := hex.DecodeString(knownKeys[7])
+	k9, _ := hex.DecodeString(knownKeys[8])
+	copy(img[0x1000:], k8) // the built-in key, as raw bytes in the image
+	copy(img[0x1020:], k9) // its neighbour, left alone
+	copy(img[0x3000:], k8) // a second copy
+	orig, ours := kp.FindBuiltIn(img, base)
+	if len(orig) != 2 || orig[0] != base+0x1000 || orig[1] != base+0x3000 || ours != 0 {
+		t.Fatalf("found %x, ours %d", orig, ours)
+	}
+	mem := &fakeMem{base: base, data: img, alive: true}
+	if n := kp.PatchBuiltIn(mem, orig); n != 2 {
+		t.Fatalf("wrote %d of 2", n)
+	}
+	want, _ := hex.DecodeString(StockServerKey)
+	if !bytes.Equal(img[0x1000:0x1020], want) || !bytes.Equal(img[0x3000:0x3020], want) {
+		t.Error("built-in key not replaced")
+	}
+	if !bytes.Equal(img[0x1020:0x1040], k9) {
+		t.Error("the neighbouring key changed")
+	}
+	if orig, ours := kp.FindBuiltIn(img, base); len(orig) != 0 || ours != 2 {
+		t.Errorf("after the patch: found %x, ours %d", orig, ours)
+	}
+}
+
+func TestReportNeverWrites(t *testing.T) {
 	kp, _ := NewKeyPatcher(StockServerKey, DefaultRegionGroup)
 	mem := &fakeMem{base: 0x40000, data: make([]byte, 32<<10), alive: true}
 	var mu sync.Mutex
-	readies := 0
+	var logs []string
 	done := make(chan struct{})
 	go func() {
-		kp.Watch(mem, func(string) {}, func() { mu.Lock(); readies++; mu.Unlock() })
+		kp.Report(mem, func(l string) { mu.Lock(); logs = append(logs, l); mu.Unlock() })
 		close(done)
 	}()
-	waitReadies := func(n int) {
+	waitLog := func(part string) {
 		t.Helper()
 		for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
 			mu.Lock()
-			r := readies
-			mu.Unlock()
-			if r >= n {
-				return
+			for _, l := range logs {
+				if strings.Contains(l, part) {
+					mu.Unlock()
+					return
+				}
 			}
+			mu.Unlock()
 		}
-		t.Fatalf("key never written (want %d writes)", n)
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("never logged %q; got %q", part, logs)
 	}
 	time.Sleep(300 * time.Millisecond) // the game hasn't opened the store yet
+	waitLog("waiting for the game")
 	const at = 0x2000
 	mem.Write(mem.base+at, keyStore(0))
-	waitReadies(1)
-	// The game reloads Blizzard's key: the watcher puts ours back.
-	orig := keyStore(0)
-	mem.Write(mem.base+at+uint64(7*entry+4), orig[7*entry+4:7*entry+36])
-	waitReadies(2)
+	waitLog("still has Blizzard's key")
+	if st := kp.state(mem, mem.base+at); st != original {
+		t.Fatalf("Report changed the store: %v", st)
+	}
+	// The game frees the store and builds it again from a patched built-in key.
+	mem.Write(mem.base+at, make([]byte, block))
+	waitLog("freed its key store")
+	st := keyStore(0)
+	ours, _ := hex.DecodeString(StockServerKey)
+	copy(st[7*entry+4:], ours)
+	mem.Write(mem.base+at, st)
+	waitLog("in the game's key store")
 	mem.mu.Lock()
 	mem.alive = false
 	mem.mu.Unlock()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("watch didn't stop when the game closed")
+		t.Fatal("Report didn't stop when the game closed")
 	}
 }
 

@@ -23,7 +23,7 @@ import (
 var stdin *bufio.Reader
 
 // cmdPlay signs in to a realm's login server, hands the game the login, and starts it with the patches it needs to
-// talk to that realm. It stays until the game closes, keeping the server key in place.
+// talk to that realm. It stays until the game closes, keeping the patches in place and reporting on the server key.
 func cmdPlay(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("play", flag.ExitOnError)
 	dir := fs.String("dir", "", "install folder (required)")
@@ -72,7 +72,7 @@ func cmdPlay(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	logf("leave this window open while you play: it keeps the realm's key in the game (Ctrl-C closes it)")
+	logf("leave this window open while you play: it keeps the patches in place and reports on them (Ctrl-C closes it)")
 	select {
 	case <-game.Done:
 		logf("the game closed")
@@ -160,14 +160,14 @@ func uiPlay(dir string) func(ctx context.Context, in webui.PlayInput, log func(s
 			return err
 		}
 		trackGame(game)
-		log("the launcher keeps the realm's key in the game until it closes; closing this window is fine, the " +
+		log("the launcher keeps the patches in place until the game closes; closing this window is fine, the " +
 			"launcher keeps running in the background until then")
 		return nil
 	}
 }
 
 // The games the ui joined to a realm and is still patching. Closing the window doesn't end the launcher while one
-// runs: the realm's key has to stay in the game.
+// runs: it keeps the patches in place.
 var (
 	gamesMu sync.Mutex
 	games   = map[*gamepatch.Game]bool{}
