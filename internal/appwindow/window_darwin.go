@@ -29,6 +29,23 @@ static void elStop(void) {
 }
 @end
 
+// The title bar is see-through and the page runs up under it (only the three window buttons sit over it), so the
+// window reads as one dark surface. The page covers the strip where the title bar was, so this invisible view on top
+// of it keeps the window draggable there; double-click zooms, as a title bar does.
+@interface ELDragStrip : NSView
+@end
+
+@implementation ELDragStrip
+- (BOOL)mouseDownCanMoveWindow { return YES; }
+- (void)mouseDown:(NSEvent *)e {
+	if (e.clickCount == 2) {
+		[self.window performZoom:nil];
+		return;
+	}
+	[self.window performWindowDragWithEvent:e];
+}
+@end
+
 static ELDelegate *elDelegate;
 static NSWindow *elWindow;
 
@@ -89,18 +106,30 @@ static void elRun(const char *title, const char *url, int width, int height) {
 		NSRect frame = NSMakeRect(0, 0, width, height);
 		elWindow = [[NSWindow alloc] initWithContentRect:frame
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
-				NSWindowStyleMaskResizable
+				NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView
 			backing:NSBackingStoreBuffered defer:NO];
 		elWindow.releasedWhenClosed = NO;
 		elWindow.title = name;
 		elWindow.delegate = elDelegate;
+		elWindow.titlebarAppearsTransparent = YES;
+		elWindow.titleVisibility = NSWindowTitleHidden;
+		elWindow.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+		// Shows until the page's first paint, instead of a white flash; close to every colour the page uses.
+		elWindow.backgroundColor = [NSColor colorWithSRGBRed:0x0e/255.0 green:0x0d/255.0 blue:0x18/255.0 alpha:1];
 		elWindow.minSize = NSMakeSize(480, 420);
 		[elWindow center];
 		[elWindow setFrameAutosaveName:@"EverlakeLauncher"]; // reopens where the player left it
 
+		NSView *root = [[NSView alloc] initWithFrame:frame];
 		WKWebView *web = [[WKWebView alloc] initWithFrame:frame configuration:[WKWebViewConfiguration new]];
 		web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-		elWindow.contentView = web;
+		[web setValue:@NO forKey:@"drawsBackground"]; // the window's colour shows until the page paints
+		[root addSubview:web];
+		CGFloat strip = 28; // the title bar's height
+		ELDragStrip *drag = [[ELDragStrip alloc] initWithFrame:NSMakeRect(0, height - strip, width, strip)];
+		drag.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+		[root addSubview:drag];
+		elWindow.contentView = root;
 		[web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithUTF8String:url]]]];
 
 		[elWindow makeKeyAndOrderFront:nil];

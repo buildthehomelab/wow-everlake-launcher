@@ -39,6 +39,7 @@ func run(o Options) error {
 		}
 		data = filepath.Join(base, "Everlake", "WebView2")
 	}
+	frameBefore()
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		DataPath:  data,
 		AutoFocus: true,
@@ -48,8 +49,17 @@ func run(o Options) error {
 		},
 	})
 	if w == nil {
+		frameAfter(0)
 		return fmt.Errorf("%w: WebView2 didn't start", ErrUnavailable)
 	}
+	hwnd := uintptr(w.Window())
+	frameAfter(hwnd)
+	// The page reports its field colour; the title bar follows it. Called on the window's own thread.
+	w.Bind("everlakeFrame", func(css string) {
+		if rgb, err := parseHex(css); err == nil {
+			frame(hwnd, rgb)
+		}
+	})
 	done := make(chan struct{})
 	defer close(done)
 	if o.Stop != nil {

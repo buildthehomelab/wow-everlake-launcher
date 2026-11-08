@@ -322,10 +322,10 @@ button:disabled { cursor: default; }
 /* Narrow or short windows: the burst sits behind the panel, dimmed, and the title shrinks. */
 @media (max-width: 720px) {
   .spell { right: -34vw; width: 110vw; opacity: .26; }
-  .panel { width: 100%; max-width: 520px; padding: 28px 22px 16px; }
+  .panel { width: 100%; max-width: 520px; padding: 36px 22px 16px; }
 }
 @media (max-height: 640px) {
-  .panel { padding-top: 24px; }
+  .panel { padding-top: 34px; }
   h1 { font-size: 56px; }
   .status { margin-top: 18px; }
   .realm, .actions { margin-top: 16px; }
@@ -426,6 +426,14 @@ if (!SCHOOLS[school]) {
   school = names[Math.floor(Math.random() * names.length)];
 }
 document.body.dataset.school = school;
+// The Windows app window paints its title bar in the page's field colour (internal/appwindow binds
+// everlakeFrame); in a browser or on the Mac, where the page runs under a see-through title bar, it isn't there.
+function tintFrame() {
+  if (typeof window.everlakeFrame !== "function") return;
+  const bg = getComputedStyle(document.body).getPropertyValue("--bg").trim();
+  try { Promise.resolve(window.everlakeFrame(bg)).catch(() => {}); } catch (e) { /* older window */ }
+}
+tintFrame();
 (function swatches() {
   const host = document.getElementById("schools");
   for (const [name, colour] of Object.entries(SCHOOLS)) {
@@ -438,6 +446,7 @@ document.body.dataset.school = school;
     b.onclick = () => {
       school = name;
       document.body.dataset.school = name;
+      tintFrame();
       for (const o of host.children) o.setAttribute("aria-pressed", String(o === b));
       try { localStorage.setItem("everlake.school", name); } catch (e) { /* no storage */ }
     };
