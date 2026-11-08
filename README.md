@@ -34,6 +34,7 @@ go build -o everlake-launcher ./cmd/everlake-launcher
 ./everlake-launcher install --dir ~/Everlake                # everything for this machine (~85 GB)
 ./everlake-launcher verify  --dir ~/Everlake
 ./everlake-launcher pin                                     # what's live now, as a pin to review
+./everlake-launcher start   --dir ~/Everlake                # starts the game the way Battle.net would (-uid wowf)
 ```
 
 `--tags` picks platform, architecture, locale and region (default: this machine, `enUS`, `US`). The region matters:

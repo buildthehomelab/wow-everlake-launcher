@@ -31,9 +31,10 @@ type Pin struct {
 	CDNPath     string   `json:"cdn_path"`     // e.g. tpr/wow
 	CDNHosts    []string `json:"cdn_hosts"`    // fallback hosts when the version server can't be asked
 	GameFolder  string   `json:"game_folder"`  // where the game's loose files go, e.g. _forever_
-	// Flavor is what <game folder>/.flavor.info names (Battle.net writes it; it's in no manifest). The game picks
-	// its tables by it: without it, the Forever client (internal name Camelot) took itself for retail and failed
-	// on retail's tables. Forever's is wow_camelot.
+	// Flavor is what <game folder>/.flavor.info names (Battle.net writes it; it's in no manifest): the product code,
+	// as for wow_classic and wow. The game picks its tables by it. Without it, or with the internal name
+	// wow_camelot, the Forever client took itself for retail and failed on retail's tables ("Invalid schema
+	// WOWSTATIC_12_1_5_70077"); with wowf, plus -uid wowf on the command line (see StartArgs), it starts.
 	Flavor string `json:"flavor"`
 	Note   string `json:"note,omitempty"`
 }
@@ -75,6 +76,10 @@ func (p Pin) Check() error {
 	}
 	return nil
 }
+
+// StartArgs are the arguments the game needs on its command line: -uid names the product, as Battle.net does.
+// Without it the Forever client also took itself for retail.
+func (p Pin) StartArgs() []string { return []string{"-uid", p.Product} }
 
 // Keys returns the parsed build and CDN config keys.
 func (p Pin) Keys() (build, cdnConfig tact.Key) {

@@ -104,7 +104,7 @@ func newFakeBuild(t *testing.T) *fakeBuild {
 
 	f.pin = pin.Pin{Product: "wowf", Region: "us", Version: "1.60.1.1", BuildID: 1, BuildConfig: buildKey.String(),
 		CDNConfig: cdnKey.String(), CDNPath: "tpr/test", GameFolder: "_forever_",
-		Flavor: "wow_camelot"}
+		Flavor: "wowf"}
 	if err := f.pin.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestInstallVerifyRepair(t *testing.T) {
 			t.Errorf("%s not in local storage", e)
 		}
 	}
-	if fl, _ := os.ReadFile(filepath.Join(game, ".flavor.info")); string(fl) != "Product Flavor!STRING:0\nwow_camelot\n" {
+	if fl, _ := os.ReadFile(filepath.Join(game, ".flavor.info")); string(fl) != "Product Flavor!STRING:0\nwowf\n" {
 		t.Errorf(".flavor.info = %q", fl)
 	}
 	bi, _ := os.ReadFile(filepath.Join(dir, ".build.info"))
