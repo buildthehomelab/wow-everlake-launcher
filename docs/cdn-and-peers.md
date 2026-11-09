@@ -58,19 +58,19 @@ share one store and one protocol.
 
 ## The mirror
 
-A new command, `everlake-launcher mirror`, runs on Patronus as the `cdn` service of the Everlake portal's compose
-file, with its store in the portal's folder on the NVMe (`/mnt/NVME/docker/everlake-portal/cdn`). It replaces
+A new command, `everlake-launcher mirror`, runs on the server as the `cdn` service of the Everlake portal's compose
+file, with its store in the portal's folder (`<portal folder>/cdn`). It replaces
 wow-project-everlake's `tools/tact/cdn.py`, which passes everything through to Blizzard and keeps nothing.
 
 That disk also holds the game's database and has stalled on sync writes before, so the mirror never forces a
 write (no fsync): a file a crash damages fails its check when next served and is fetched again. The prefetch is
 capped (`--rate-mb`, default 40).
 
-It listens on a port of the server's own address (8088 on Patronus) and nothing else: no Traefik route, no
+It listens on a port of the server's own address (for example 8088) and nothing else: no Traefik route, no
 Cloudflare tunnel, no forwarded port. It answers on two faces:
 
 1. **Blizzard's CDN layout** (`/tpr/wow/config/..`, `/tpr/wow/data/..`, with byte ranges). Launchers at home
-   (`--cdn 192.168.1.125:8088`), the Mac mini scripts and the game can then use it as a normal CDN host.
+   (`--cdn <server LAN address>:8088`), the Mac mini scripts and the game can then use it as a normal CDN host.
    - A whole file or config it has: served from the store.
    - A byte range inside an archive: the mirror keeps archives as sparse files with a list of the ranges stored.
      A stored range is served after checking every file wholly inside it against the archive index; otherwise the
@@ -135,7 +135,7 @@ after the mirror and LAN peers work.
 ## Steps
 
 1. **Mirror, Blizzard layout** — `mirror` command, store, pass-through with checks and keeping, archive ranges,
-   our patched builds first, `--prefetch`. Compose service on Patronus in place of `cdn`. The launcher gets a
+   our patched builds first, `--prefetch`. Compose service on the server in place of `cdn`. The launcher gets a
    mirror host setting that goes first in its host list (`pin.Hosts` already takes extra hosts for this).
    Done when: an install on a fresh folder with Blizzard's hosts blocked completes from the mirror alone.
 2. **Peer protocol** — `/everlake/v1/` on the mirror, and the launcher fetching through it in batches.

@@ -237,7 +237,7 @@ func (s *Store) writeHave(p string, have []span, total int64) error {
 }
 
 // writeNoSync replaces a file through a temporary file and a rename, without forcing it to disk. The mirror never
-// forces writes: on Patronus they stall the disk the game's database is on, and anything a crash damages fails its
+// forces writes: on a busy server they stall the disk the game's database is on, and anything a crash damages fails its
 // hash check when next served and is fetched again.
 func writeNoSync(p string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
