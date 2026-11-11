@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -62,6 +63,10 @@ func download(ctx context.Context, installDir string, log func(string), tools fs
 		log(scanner.Text())
 	}
 	if err := cmd.Wait(); err != nil {
+		var status *exec.ExitError
+		if errors.As(err, &status) && status.ExitCode() == 2 {
+			return fmt.Errorf("Era maps finished with gaps. See %s", filepath.Join(stage, "logs", "missing-files.tsv"))
+		}
 		return fmt.Errorf("Era map collection reported an error (%w). See the catalog log in %s", err, stage)
 	}
 	return scanner.Err()
