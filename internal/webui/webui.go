@@ -125,6 +125,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
 	mux.HandleFunc("/status", s.status)
+	mux.HandleFunc("/diagnostics", s.diagnostics)
 	mux.HandleFunc("/run", s.run)
 	mux.HandleFunc("/events", s.events)
 	mux.HandleFunc("/folder", s.folder)

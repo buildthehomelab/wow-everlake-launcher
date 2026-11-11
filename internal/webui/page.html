@@ -410,7 +410,7 @@ body.still *, body.still *::before, body.still *::after { animation: none !impor
 </main>
 
 <section class="drawer" id="drawer" aria-label="Launcher log">
-  <div class="drawer-head"><span>Log</span><button class="linkish" id="logClose" type="button">Close</button></div>
+  <div class="drawer-head"><span>Log</span><button class="linkish" id="saveDiagnostics" type="button">Save diagnostics</button><button class="linkish" id="logClose" type="button">Close</button></div>
   <pre class="log" id="log"></pre>
 </section>
 
@@ -865,6 +865,18 @@ function openLog(open) {
 }
 $("logToggle").onclick = () => openLog(!$("drawer").classList.contains("open"));
 $("logClose").onclick = () => openLog(false);
+$("saveDiagnostics").onclick = async () => {
+  const button = $("saveDiagnostics");
+  button.disabled = true;
+  try {
+    const response = await fetch("diagnostics", { method: "POST" });
+    addLine((await response.text()).trim());
+  } catch {
+    addLine("error: Could not save diagnostics.");
+  } finally {
+    button.disabled = false;
+  }
+};
 document.addEventListener("keydown", e => { if (e.key === "Escape") openLog(false); });
 
 // The launcher replays the running job's lines to a page that (re)connects, so a fresh connection starts clean.
