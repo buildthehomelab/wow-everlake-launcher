@@ -75,7 +75,7 @@ func stagingDir(installDir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("the selected launcher folder is not a directory")
 	}
-	stage := filepath.Join(installDir, "Era maps")
+	stage := filepath.Join(installDir, "_era_")
 	if _, err := os.Lstat(stage); os.IsNotExist(err) {
 		return stage, nil
 	} else if err != nil {

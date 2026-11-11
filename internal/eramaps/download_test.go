@@ -41,12 +41,12 @@ with urlopen(os.environ["EVERLAKE_TEST_CDN"], timeout=10) as response:
 	if err := download(context.Background(), install, func(line string) { t.Log(line) }, tools); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(install, "Era maps", "fixture.wdt"))
+	data, err := os.ReadFile(filepath.Join(install, "_era_", "fixture.wdt"))
 	if err != nil || string(data) != "fixture map bytes" {
 		t.Fatalf("staged map = %q, %v", data, err)
 	}
 	entries, err := os.ReadDir(install)
-	if err != nil || len(entries) != 2 || entries[0].Name() != "Data" || entries[1].Name() != "Era maps" {
+	if err != nil || len(entries) != 2 || entries[0].Name() != "Data" || entries[1].Name() != "_era_" {
 		t.Fatalf("Forever directory changed: %v, %v", entries, err)
 	}
 	data, err = os.ReadFile(sentinel)
@@ -61,7 +61,7 @@ func TestStagingDirRejectsRedirectIntoForever(t *testing.T) {
 	if err := os.Mkdir(data, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(data, filepath.Join(install, "Era maps")); err != nil {
+	if err := os.Symlink(data, filepath.Join(install, "_era_")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	if _, err := stagingDir(install); err == nil {
