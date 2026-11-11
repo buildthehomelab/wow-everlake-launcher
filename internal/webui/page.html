@@ -399,6 +399,7 @@ body.still *, body.still *::before, body.still *::after { animation: none !impor
 
   <label class="check"><input id="eraContent" type="checkbox">Era content</label>
   <button class="ghost" id="eraMaps" type="button" hidden>Download Era maps</button>
+  <button class="ghost" id="playClassic" type="button" hidden>Play Classic</button>
 
   <footer class="foot">
     <span class="path" id="path"></span>
@@ -643,6 +644,8 @@ function render() {
   $("eraContent").disabled = !s || !!busy;
   $("eraMaps").hidden = !$("eraContent").checked;
   $("eraMaps").disabled = !s || !!busy;
+  $("playClassic").hidden = !$("eraContent").checked || !s?.realm.supported;
+  $("playClassic").disabled = !s || !!busy;
   $("install").disabled = !s || !!busy;
   $("verify").disabled = !s || !!busy || !installed;
   $("verify").parentElement.hidden = !installed; // nothing to update or verify before the first install
@@ -817,13 +820,13 @@ $("folderInput").addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); $("folderCancel").click(); }
 });
 
-async function run(name) {
+async function run(name, classic = false) {
   if (busy) return;
   const opts = { method: "POST" };
   if (name === "play") {
     opts.headers = { "Content-Type": "application/json" };
     opts.body = JSON.stringify({ login_host: $("loginHost").value.trim(), email: $("email").value.trim(),
-                                 password: $("password").value, remember: $("remember").checked });
+                                 password: $("password").value, remember: $("remember").checked, classic });
   }
   clearLog();
   resetProgress();
@@ -842,6 +845,7 @@ $("play").onclick = () => run($("play").dataset.job || "play");
 $("install").onclick = () => run("install");
 $("verify").onclick = () => run("verify");
 $("eraContent").onchange = render;
+$("playClassic").onclick = () => run("play", true);
 $("eraMaps").onclick = () => { if ($("eraContent").checked) run("era-maps"); };
 $("password").addEventListener("keydown", e => { if (e.key === "Enter" && !$("play").disabled) $("play").click(); });
 
