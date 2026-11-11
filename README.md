@@ -259,8 +259,10 @@ GPL-2.0, as the rest of Project Everlake.
 ## Optional Era map collection
 
 Check **Era content** in the launcher and click **Download Era maps**. This
-requires Python 3.9 or newer and curl. The launcher stages map assets under
-`Everlake/Era maps` in your user configuration folder. The download uses
+requires Python 3.9 or newer and curl. The launcher stages map assets in an
+`_era_` subfolder of the folder selected in the launcher. Select a folder
+on an external drive to keep both downloads on that drive. Existing Era
+downloads in the previous user configuration location stay there. The download uses
 pinned Classic Era, TBC Anniversary and Wrath Titan CDN builds and records a
 catalog log and a per-map inventory. The Forever game directory and realm
 settings are untouched. Cataclysm needs a verified CDN donor.
