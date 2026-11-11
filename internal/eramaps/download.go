@@ -6,6 +6,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,10 @@ import (
 var scripts embed.FS
 
 func Download(ctx context.Context, installDir string, log func(string)) error {
+	return download(ctx, installDir, log, scripts)
+}
+
+func download(ctx context.Context, installDir string, log func(string), tools fs.FS) error {
 	config, err := os.UserConfigDir()
 	if err != nil {
 		return err
@@ -38,12 +43,12 @@ func Download(ctx context.Context, installDir string, log func(string)) error {
 		return err
 	}
 	defer os.RemoveAll(temp)
-	entries, err := scripts.ReadDir(".")
+	entries, err := fs.ReadDir(tools, ".")
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		data, err := scripts.ReadFile(entry.Name())
+		data, err := fs.ReadFile(tools, entry.Name())
 		if err != nil {
 			return err
 		}
