@@ -1,4 +1,4 @@
-// Package eramaps stages historical map assets outside the Forever installation.
+// Package eramaps stages historical map assets beside the Forever client files.
 package eramaps
 
 import (
@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 //go:embed map_catalog.py fetch_map_tiles.py tact.py collect.py
@@ -22,17 +21,9 @@ func Download(ctx context.Context, installDir string, log func(string)) error {
 }
 
 func download(ctx context.Context, installDir string, log func(string), tools fs.FS) error {
-	config, err := os.UserConfigDir()
+	stage, err := stagingDir(installDir)
 	if err != nil {
 		return err
-	}
-	stage := filepath.Join(config, "Everlake", "Era maps")
-	installDir, err = filepath.Abs(installDir)
-	if err != nil {
-		return err
-	}
-	if within(installDir, stage) || within(stage, installDir) {
-		return fmt.Errorf("Era map staging overlaps the Forever install folder")
 	}
 	python, args, err := pythonCommand()
 	if err != nil {
@@ -76,9 +67,31 @@ func download(ctx context.Context, installDir string, log func(string), tools fs
 	return scanner.Err()
 }
 
-func within(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+func stagingDir(installDir string) (string, error) {
+	info, err := os.Stat(installDir)
+	if err != nil {
+		return "", fmt.Errorf("open the selected launcher folder: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("the selected launcher folder is not a directory")
+	}
+	stage := filepath.Join(installDir, "Era maps")
+	if _, err := os.Lstat(stage); os.IsNotExist(err) {
+		return stage, nil
+	} else if err != nil {
+		return "", err
+	}
+	// A redirected stage or cache could otherwise write into the Forever data tree.
+	err = filepath.WalkDir(stage, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 || (path == stage && !entry.IsDir()) {
+			return fmt.Errorf("Era map staging contains a redirected or invalid path: %s", path)
+		}
+		return nil
+	})
+	return stage, err
 }
 
 func pythonCommand() (string, []string, error) {
