@@ -38,6 +38,7 @@ import (
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/appwindow"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/eramaps"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/folderpick"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
@@ -535,6 +536,7 @@ func cmdUI(ctx context.Context, args []string) error {
 // terminal (detached), it ends a while after the last page closes.
 func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) error {
 	srv := webui.New(dir, pin.Default().Version, webui.Actions{
+		EraMaps: eramaps.Download,
 		Install: func(ctx context.Context, dir string, log func(string)) error {
 			return runInstall(ctx, installOptions(ctx, dir, false), log)
 		},

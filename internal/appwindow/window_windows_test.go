@@ -3,6 +3,7 @@
 package appwindow
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/webui"
 )
 
 // TestWindowLoadsPage opens a real WebView2 window on a page whose script tints the title bar and calls back, and
@@ -58,5 +61,64 @@ func TestWindowLoadsPage(t *testing.T) {
 		t.Logf("page loaded in the window: %s", ua)
 	default:
 		t.Fatal("the window closed without the page calling back (timed out)")
+	}
+}
+
+func TestWindowEraCheckbox(t *testing.T) {
+	if os.Getenv("EVERLAKE_WINDOW_TEST") != "1" {
+		t.Skip("set EVERLAKE_WINDOW_TEST=1 to open a real window")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	stop := make(chan struct{})
+	var once sync.Once
+	result := make(chan string, 1)
+	finish := func(value string) {
+		once.Do(func() { result <- value; close(stop) })
+	}
+	install := t.TempDir()
+	ui := webui.New(install, "test", webui.Actions{
+		EraMaps: func(_ context.Context, dir string, _ func(string)) error {
+			finish(dir)
+			return nil
+		},
+	}).Handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/era-test-failed" {
+			finish(r.URL.Query().Get("reason"))
+			return
+		}
+		ui.ServeHTTP(w, r)
+		if r.URL.Path == "/" {
+			_, _ = w.Write([]byte(`<script>
+const eraTest = setInterval(() => {
+  const box = document.getElementById("eraContent");
+  const button = document.getElementById("eraMaps");
+  if (box.disabled) return;
+  clearInterval(eraTest);
+  const fail = reason => fetch("/era-test-failed?reason=" + encodeURIComponent(reason));
+  if (box.checked || !button.hidden) return fail("Era content was enabled by default");
+  box.click();
+  if (button.hidden || button.disabled) return fail("checkbox did not enable the download");
+  button.click();
+}, 100);
+</script>`))
+		}
+	}))
+	defer ts.Close()
+	timer := time.AfterFunc(45*time.Second, func() { finish("Era map action timed out") })
+	defer timer.Stop()
+	if err := Run(Options{Title: "Everlake Era checkbox test", URL: ts.URL + "/", Width: 600, Height: 600,
+		DataDir: t.TempDir(), Stop: stop}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-result:
+		if got != install {
+			t.Fatal(got)
+		}
+	default:
+		t.Fatal("window closed before the Era map action ran")
 	}
 }

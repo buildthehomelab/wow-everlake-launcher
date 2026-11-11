@@ -397,6 +397,9 @@ body.still *, body.still *::before, body.still *::after { animation: none !impor
     </div>
   </div>
 
+  <label class="check"><input id="eraContent" type="checkbox">Era content</label>
+  <button class="ghost" id="eraMaps" type="button" hidden>Download Era maps</button>
+
   <footer class="foot">
     <span class="path" id="path"></span>
     <button class="linkish" id="pathEdit" type="button" title="Change the install folder">Change</button>
@@ -637,6 +640,9 @@ function render() {
   play.dataset.job = !installed ? "install" : broken ? "install" : "play";
   play.textContent = busy ? (VERB[busy] || "Working") + "…" : !installed ? "Install" : broken ? "Repair" : "Play";
   play.disabled = !s || !!busy;
+  $("eraContent").disabled = !s || !!busy;
+  $("eraMaps").hidden = !$("eraContent").checked;
+  $("eraMaps").disabled = !s || !!busy;
   $("install").disabled = !s || !!busy;
   $("verify").disabled = !s || !!busy || !installed;
   $("verify").parentElement.hidden = !installed; // nothing to update or verify before the first install
@@ -835,6 +841,8 @@ async function run(name) {
 $("play").onclick = () => run($("play").dataset.job || "play");
 $("install").onclick = () => run("install");
 $("verify").onclick = () => run("verify");
+$("eraContent").onchange = render;
+$("eraMaps").onclick = () => { if ($("eraContent").checked) run("era-maps"); };
 $("password").addEventListener("keydown", e => { if (e.key === "Enter" && !$("play").disabled) $("play").click(); });
 
 // ------------------------------------------------------------------ log

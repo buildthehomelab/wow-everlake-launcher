@@ -28,6 +28,7 @@ var files embed.FS
 // reach the page. Play gets what the player typed. They are injected so the package needs no network of its own and
 // can be tested with fakes.
 type Actions struct {
+	EraMaps func(ctx context.Context, dir string, log func(string)) error
 	Install func(ctx context.Context, dir string, log func(string)) error
 	Verify  func(ctx context.Context, dir string, log func(string)) error
 	Play    func(ctx context.Context, dir string, in PlayInput, log func(string)) error
@@ -261,7 +262,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("name")
-	if name != "install" && name != "verify" && name != "play" {
+	if name != "install" && name != "verify" && name != "play" && name != "era-maps" {
 		http.Error(w, "unknown job", http.StatusBadRequest)
 		return
 	}
@@ -340,6 +341,11 @@ func (s *Server) begin(name string, job func(dir string) error) (string, bool) {
 func (s *Server) do(name, dir string, in PlayInput) error {
 	ctx := context.Background()
 	switch name {
+	case "era-maps":
+		if s.act.EraMaps == nil {
+			return fmt.Errorf("Era map downloads are unavailable")
+		}
+		return s.act.EraMaps(ctx, dir, s.broadcast)
 	case "install":
 		if s.act.Install == nil {
 			return fmt.Errorf("install isn't available")

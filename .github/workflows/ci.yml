@@ -60,7 +60,7 @@ jobs:
         timeout-minutes: 3
         env:
           EVERLAKE_WINDOW_TEST: '1'
-        run: go test -v -run TestWindowLoadsPage ./internal/appwindow
+        run: go test -v -run TestWindow ./internal/appwindow
 
   macos:
     runs-on: macos-latest
