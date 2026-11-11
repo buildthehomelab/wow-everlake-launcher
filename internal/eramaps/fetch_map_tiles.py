@@ -25,7 +25,43 @@ def main():
     from tact import Tact
 
     source = Tact(str(args.cache))
-    wdt = source.read(args.wdt)
+    output = args.out / source.build / str(args.wdt)
+    output.mkdir(parents=True, exist_ok=True)
+
+    def fetch(file_id):
+        path = output / str(file_id)
+        try:
+            with source.lock:
+                row = source.db.execute(
+                    "SELECT ckey FROM files WHERE fdid = ?", (file_id,)
+                ).fetchone()
+            if row is None:
+                raise ValueError("absent from donor build")
+            if path.exists() and hashlib.md5(path.read_bytes()).digest() == row[0]:
+                return None
+            data = source.read(file_id)
+            temporary = path.with_suffix(".part")
+            temporary.write_bytes(data)
+            temporary.replace(path)
+            return None
+        except Exception as error:
+            return str(error)
+
+    def write_inventory(report):
+        path = output / "inventory.json"
+        temporary = path.with_suffix(".part")
+        temporary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+
+    error = fetch(args.wdt)
+    if error:
+        write_inventory({
+            "version": source.version, "build_config": source.build, "wdt": args.wdt,
+            "tiles": {}, "file_ids": [args.wdt], "failures": {args.wdt: error},
+        })
+        print(f"WDT {args.wdt}: {error}", flush=True)
+        return 1
+    wdt = (output / str(args.wdt)).read_bytes()
     sections = chunks(wdt)
     main_entries = list(struct.iter_unpack("<2I", sections.get("MAIN", [bytes(4096 * 8)])[0]))
     tile_entries = list(struct.iter_unpack("<8I", sections.get("MAID", [bytes(4096 * 32)])[0]))
@@ -45,28 +81,6 @@ def main():
                 wdt_dependencies.append(struct.unpack_from("<I", section, entry)[0])
     ids.update(wdt_dependencies)
     ids.discard(0)
-    output = args.out / source.build / str(args.wdt)
-    output.mkdir(parents=True, exist_ok=True)
-
-    def fetch(file_id):
-        path = output / str(file_id)
-        try:
-            with source.lock:
-                row = source.db.execute(
-                    "SELECT ckey FROM files WHERE fdid = ?", (file_id,)
-                ).fetchone()
-            if row is None:
-                raise ValueError("absent from donor build")
-            if path.exists() and hashlib.md5(path.read_bytes()).digest() == row[0]:
-                return None
-            data = wdt if file_id == args.wdt else source.read(file_id)
-            temporary = path.with_suffix(".part")
-            temporary.write_bytes(data)
-            temporary.replace(path)
-            return None
-        except Exception as error:
-            return str(error)
-
     class Dependencies(Collector):
         def __init__(self):
             self.src = source
@@ -104,7 +118,7 @@ def main():
                 if index % 250 == 0:
                     print(f"{index}/{len(ordered)} checked, {len(failures)} failed", flush=True)
 
-        fetch_batch(ids)
+        fetch_batch(ids - {args.wdt})
         if args.listfile:
             dependencies = Dependencies()
             for file_id in wdt_dependencies:
@@ -132,7 +146,7 @@ def main():
     }
     if dependencies:
         report["unresolved_paths"] = sorted(dependencies.unresolved_paths)
-    (output / "inventory.json").write_text(json.dumps(report, indent=2) + "\n")
+    write_inventory(report)
     print(f"{len(ids) - len(failures)}/{len(ids)} verified in {output}", flush=True)
     return int(bool(failures or (dependencies and dependencies.unresolved_paths)))
 

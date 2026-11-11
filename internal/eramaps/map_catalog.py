@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import csv
 import json
 import os
 import shutil
@@ -101,36 +102,79 @@ def download(tact_tools, sources):
     print(f"Collecting maps in {sources}. Progress is written to {catalog_log}.", flush=True)
     with ThreadPoolExecutor(max_workers=len(PINS)) as pool:
         results = list(pool.map(lambda donor: fetch_donor(tact_tools, listfile, logs, donor, sources), PINS))
-    return int(any(results))
+    issues = [issue for donor_issues in results for issue in donor_issues]
+    report = logs / "missing-files.tsv"
+    missing_ids = {issue[3] for issue in issues if issue[3]}
+    names = {}
+    with listfile.open(encoding="utf-8", errors="replace") as lines:
+        for line in lines:
+            file_id, _, path = line.strip().partition(";")
+            if file_id in missing_ids:
+                names[file_id] = path
+    temporary = report.with_suffix(".part")
+    with temporary.open("w", encoding="utf-8", newline="") as out:
+        writer = csv.writer(out, delimiter="\t")
+        writer.writerow(("donor", "map_id", "map_path", "file_id", "file_path", "status", "detail"))
+        for donor, wdt, path, file_id, asset, status, detail in issues:
+            writer.writerow((donor, wdt, path, file_id, asset or names.get(file_id, ""), status, detail))
+    temporary.replace(report)
+    print(f"{len(issues)} unresolved map references or errors. File details: {report}", flush=True)
+    return 2 if issues else 0
+
+
+def failure_status(error):
+    if error == "absent from donor build":
+        return "absent from donor"
+    if error.startswith("dependency scan:"):
+        return "scan error"
+    if "timed out" in error.lower() or "timeout" in error.lower():
+        return "download timed out"
+    return "download error"
 
 
 def fetch_donor(tact_tools, listfile, logs, donor, sources):
     donor_logs = logs / donor
     donor_logs.mkdir(exist_ok=True)
     build, _ = PINS[donor]
-    failures = 0
+    issues = []
     candidates = sources / f"{donor}-map-candidates.tsv"
     with (logs / "catalog.log").open("a", encoding="utf-8", buffering=1) as catalog:
         for line in candidates.read_text().splitlines():
             wdt, path = line.split("\t", 1)
             inventory = sources / "maps" / build / wdt / "inventory.json"
-            if inventory.exists():
-                report = json.loads(inventory.read_text())
-                if "unresolved_paths" in report:
-                    failures += bool(report["failures"] or report["unresolved_paths"])
-                    continue
-            print(f"{donor} {wdt} {path}", file=catalog)
-            print(f"Collecting {path} from {donor.removesuffix('-cache')}", flush=True)
-            with (donor_logs / f"{wdt}.log").open("wb") as log:
-                result = subprocess.call(
-                    [sys.executable, "-u", TOOLS / "fetch_map_tiles.py",
-                     "--tact-tools", tact_tools, "--cache", sources / donor,
-                     "--wdt", wdt, "--out", sources / "maps", "--listfile", listfile],
-                    stdout=log, stderr=subprocess.STDOUT,
-                )
-            failures += bool(result)
-            print(f"{donor} {wdt} exit={result}", file=catalog)
-    return failures
+            report = json.loads(inventory.read_text()) if inventory.exists() else {}
+            failures = report.get("failures", {})
+            retry = any(failure_status(error) in ("download timed out", "download error")
+                        for error in failures.values())
+            if "unresolved_paths" not in report or retry:
+                command = [
+                    sys.executable, "-u", TOOLS / "fetch_map_tiles.py",
+                    "--tact-tools", tact_tools, "--cache", sources / donor,
+                    "--wdt", wdt, "--out", sources / "maps", "--listfile", listfile,
+                ]
+                print(f"{donor} {wdt} {path}", file=catalog)
+                print(f"Collecting {path} from {donor.removesuffix('-cache')}", flush=True)
+                with (donor_logs / f"{wdt}.log").open("ab") as log:
+                    for attempt in range(2):
+                        previous = inventory.stat().st_mtime_ns if inventory.exists() else None
+                        result = subprocess.call(command, stdout=log, stderr=subprocess.STDOUT)
+                        updated = inventory.exists() and inventory.stat().st_mtime_ns != previous
+                        report = json.loads(inventory.read_text()) if inventory.exists() else {}
+                        failures = report.get("failures", {})
+                        if not updated or result != 1 or not any(failure_status(error) == "download timed out"
+                                                  for error in failures.values()):
+                            break
+                        if attempt == 0:
+                            print(f"Retrying timed-out files for {path}", flush=True)
+                print(f"{donor} {wdt} exit={result}", file=catalog)
+                if result and (not updated or result != 1 or not (failures or report.get("unresolved_paths"))):
+                    issues.append((donor, wdt, path, "", "", "collector error",
+                                   f"exit {result}; see {donor_logs / (wdt + '.log')}"))
+            for file_id, error in failures.items():
+                issues.append((donor, wdt, path, file_id, "", failure_status(error), error))
+            for asset in report.get("unresolved_paths", []):
+                issues.append((donor, wdt, path, "", asset, "unresolved path", "No FileDataID in the listfile"))
+    return issues
 
 
 if __name__ == "__main__":

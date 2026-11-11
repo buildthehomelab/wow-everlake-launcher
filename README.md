@@ -266,3 +266,7 @@ downloads in the previous user configuration location stay there. The download u
 pinned Classic Era, TBC Anniversary and Wrath Titan CDN builds and records a
 catalog log and a per-map inventory. The Forever game directory and realm
 settings are untouched. Cataclysm needs a verified CDN donor.
+
+Run **Download Era maps** again to retry failed transfers. The launcher reuses
+verified files and skips completed maps. See `_era_/logs/missing-files.tsv`
+for the map, FileDataID, known asset path, and reason for each remaining gap.
