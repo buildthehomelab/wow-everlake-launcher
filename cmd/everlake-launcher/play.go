@@ -160,6 +160,9 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 // uiPlay is the page's Play button: with a login server, join that realm; without one, start the game on its own.
 func uiPlay() func(ctx context.Context, dir string, in webui.PlayInput, log func(string)) error {
 	return func(ctx context.Context, dir string, in webui.PlayInput, log func(string)) error {
+		if in.Classic && (runtime.GOOS != "windows" || strings.TrimSpace(in.LoginHost) == "") {
+			return fmt.Errorf("Classic requires Windows and a login server")
+		}
 		if strings.TrimSpace(in.LoginHost) == "" || runtime.GOOS != "windows" {
 			pid, err := install.Start(dir)
 			if err != nil {
@@ -179,6 +182,18 @@ func uiPlay() func(ctx context.Context, dir string, in webui.PlayInput, log func
 		if password == "" {
 			if password, saved = rememberedPassword(s.LoginHost, s.Email); saved {
 				log("using the remembered password")
+			}
+		}
+		if in.Classic {
+			if err := s.Check(); err != nil {
+				return err
+			}
+			if s.Email == "" || password == "" {
+				return fmt.Errorf("email and password are needed to sign in")
+			}
+			dir, err = prepareClassic(ctx, dir, log)
+			if err != nil {
+				return err
 			}
 		}
 		// The game outlives the job; its patches keep logging to the page and stop when it closes.

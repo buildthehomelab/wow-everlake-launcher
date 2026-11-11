@@ -57,6 +57,7 @@ type Actions struct {
 
 // PlayInput is the sign-in the page sends with Play. An empty LoginHost starts the game without joining a realm.
 type PlayInput struct {
+	Classic   bool   `json:"classic"`
 	LoginHost string `json:"login_host"`
 	Email     string `json:"email"`
 	Password  string `json:"password"` // empty: use the remembered one
