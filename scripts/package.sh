@@ -84,12 +84,14 @@ macos)
 	<key>LSMinimumSystemVersion</key><string>$macos</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.games</string>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>NSMicrophoneUsageDescription</key><string>World of Warcraft launched by Everlake uses your microphone for in-game voice chat.</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 	<key>NSAppTransportSecurity</key>
 	<dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 EOF
+	/usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist" >/dev/null
 	# Not notarised: an ad-hoc signature, which Apple silicon needs to run it at all.
 	codesign --force --sign - "$app"
 	codesign --verify --strict "$app"
