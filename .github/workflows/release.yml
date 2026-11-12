@@ -1,0 +1,100 @@
+name: release
+on:
+  push:
+    branches: [main]
+    paths: [release/version.txt]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Native window tests
+        env:
+          EVERLAKE_WINDOW_TEST: '1'
+        run: go test -v -run TestWindow ./internal/appwindow
+      - name: Package and verify Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(tr -d '\r\n' < release/version.txt)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]
+          scripts/package.sh windows "$tag" dist
+          (cd dist && sha256sum *.exe > SHA256SUMS.txt)
+          test "$(dist/everlake-launcher-cli-windows-amd64.exe version)" = "$tag"
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+      - name: Verify packaged window executable
+        shell: pwsh
+        run: |
+          $tag = (Get-Content release/version.txt -Raw).Trim()
+          $p = Start-Process ./dist/everlake-launcher-windows-amd64.exe -ArgumentList version -Wait -PassThru -RedirectStandardOutput version.txt -RedirectStandardError error.txt
+          if ($p.ExitCode -ne 0 -or (Get-Content version.txt -Raw).Trim() -ne $tag) { throw 'Packaged Windows launcher failed version smoke test' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*.exe
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Package and verify macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(cat release/version.txt)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]
+          scripts/package.sh macos "$tag" dist
+          scripts/package.sh sums - dist
+          ditto -x -k dist/Everlake-Launcher-macos.zip verified
+          app="verified/Everlake Launcher.app"
+          codesign --verify --strict "$app"
+          lipo -info "$app/Contents/MacOS/everlake-launcher" | grep -q 'x86_64 arm64'
+          lipo -info "$app/Contents/Resources/keypatch.dylib" | grep -q 'x86_64 arm64'
+          test "$("$app/Contents/MacOS/everlake-launcher" version)" = "$tag"
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            dist/*.zip
+            dist/*.dmg
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete asset set and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(cat release/version.txt)
+          for file in everlake-launcher-windows-amd64.exe everlake-launcher-cli-windows-amd64.exe Everlake-Launcher-macos.zip Everlake-Launcher-macos.dmg; do
+            test -s "dist/$file"
+          done
+          (cd dist && sha256sum *.exe *.zip *.dmg > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --title "Everlake Launcher $tag" --notes-file release/notes.txt dist/*.exe dist/*.zip dist/*.dmg dist/SHA256SUMS.txt
+          gh release edit "$tag" --draft=false --prerelease=false --latest

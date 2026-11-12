@@ -22,6 +22,8 @@ func TestNewer(t *testing.T) {
 		want         bool
 	}{
 		{"v0.1.0-alpha.14", "v0.1.0-alpha.13", true},
+		{"v0.1.1-alpha.1", "v0.1.0-alpha.22", true},
+		{"v0.1.1-alpha.1", "v0.1.0-alpha.23-windows-test.1", true},
 		{"v0.1.0-alpha.14", "0.1.0-alpha.13", true}, // with or without the v
 		{"v0.1.0-alpha.10", "v0.1.0-alpha.9", true}, // numbers by value, not as text
 		{"v0.1.0-alpha.9", "v0.1.0-alpha.10", false},

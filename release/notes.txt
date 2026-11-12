@@ -1,0 +1,11 @@
+Regular launcher update for Windows and macOS, available through the launcher updater.
+
+Forever and the Everlake Classic–Wrath prototype share one client. In-place updates preserve the Classic overlay, verify and reuse matching files, download missing or damaged content, and avoid a second client or duplicate asset cache. Addons and WTF settings are preserved. Interrupted updates can resume. Changed files still need temporary free space; the previous game build is replaced.
+
+For limited disk space: finish any current download, close the game and other launchers, open Use an existing installation, choose Forever, and enter the existing root containing Data and .build.info. Leave destination empty and choose Update existing installation in place. Keep _era_/overlay available. Afterwards select that root using Change, verify files, and test Play and Play Classic–Wrath prototype. Shared Battle.net roots containing multiple products are rejected.
+
+Includes account login, remembered credentials (Windows DPAPI / macOS Keychain), the packaged Everlake addon, shared verified assets, corruption repair, a compact launcher UI, and narration disabled for launcher sessions. Fixes native Mac microphone privacy crashes.
+
+Validation: Windows-native unit and window tests, Mac and Linux CI, selective corruption repair, zero-download reuse, interruption/resume, and real shared-overlay in-place verification. Mac login and Forever world entry, addon execution and saved settings passed. Live gameplay on the user's Windows machine remains pending. Retail realm joining is excluded because the server is not available.
+
+Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included. The version advances to 0.1.1-alpha.1 so both prior regular releases and the Windows test build recognize it as newer.
