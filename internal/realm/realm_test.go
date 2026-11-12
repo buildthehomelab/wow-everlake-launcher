@@ -150,7 +150,8 @@ func TestWriteWTF(t *testing.T) {
 	}
 	b, _ := os.ReadFile(filepath.Join(game, "WTF", WTFName))
 	want := "SET gxWindow \"1\"\r\nSET portal \"login.realm.example.com\"\r\nSET textLocale \"enUS\"\r\n" +
-		"SET audioLocale \"enUS\"\r\n"
+		"SET audioLocale \"enUS\"\r\n" +
+		`SET accessibilityScreenNarrationEnabled "0"` + "\r\n" + `SET showScreenNarrationDialog "0"` + "\r\n"
 	if string(b) != want {
 		t.Errorf("Everlake.wtf:\n%q\nwant\n%q", b, want)
 	}
@@ -161,5 +162,21 @@ func TestWriteWTF(t *testing.T) {
 	}
 	if c, _ := os.ReadFile(filepath.Join(game, "WTF", "Config.wtf")); !strings.Contains(string(c), `portal "US"`) {
 		t.Error("Config.wtf changed")
+	}
+}
+
+func TestLaunchDisablesNarration(t *testing.T) {
+	game := t.TempDir()
+	os.MkdirAll(filepath.Join(game, "WTF"), 0755)
+	for _, value := range []string{"0", "1"} {
+		path := filepath.Join(game, "WTF", WTFName)
+		os.WriteFile(path, []byte("SET accessibilityScreenNarrationEnabled "+value+"\n"), 0600)
+		if err := WriteWTF(game, "login.realm.example.com"); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(path)
+		if !strings.Contains(string(b), `SET accessibilityScreenNarrationEnabled "0"`) {
+			t.Fatal("narration was not disabled for launcher session")
+		}
 	}
 }

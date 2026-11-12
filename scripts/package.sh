@@ -54,6 +54,9 @@ macos)
 	done
 	app="$work/Everlake Launcher.app"
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    clang -x c -O2 -dynamiclib -arch arm64 -arch x86_64 \
+        internal/gamepatch/macos/keypatch.c.txt -o "$app/Contents/Resources/keypatch.dylib"
+    codesign --force --sign - "$app/Contents/Resources/keypatch.dylib"
 	# The app icon, from assets/icon-macos.png (rendered from assets/icon.html) in every size macOS uses.
 	iconset=$work/AppIcon.iconset
 	mkdir "$iconset"

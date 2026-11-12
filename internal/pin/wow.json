@@ -1,0 +1,13 @@
+{
+  "product": "wow",
+  "region": "us",
+  "version": "12.1.5.70783",
+  "build_id": 70783,
+  "build_config": "bc493ecb2898766c0f8947a99b4b3d65",
+  "cdn_config": "8ecf609471cb2ea16667be9cc2b7a555",
+  "cdn_path": "tpr/wow",
+  "cdn_hosts": ["level3.blizzard.com", "us.cdn.blizzard.com"],
+  "game_folder": "_retail_",
+  "flavor": "wow",
+  "note": "TrinityCore master 4d146b59c47d60007ffc5fca89d45339814b6dba, sql/updates/auth/master/2026_11_04_00_auth.sql. Blizzard US metadata verified 2026-11-12."
+}

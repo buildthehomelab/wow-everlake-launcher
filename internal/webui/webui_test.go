@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -486,5 +487,71 @@ func TestLookWithoutStore(t *testing.T) {
 	defer ts.Close()
 	if code, _ := postJSON(t, ts.URL+"/look", `{"animation":true}`); code != http.StatusNoContent {
 		t.Errorf("no store: %d", code)
+	}
+}
+
+func TestClientImportRoute(t *testing.T) {
+	called := make(chan PlayInput, 1)
+	s := New(t.TempDir(), "test", Actions{Client: func(ctx context.Context, dir, action string, in PlayInput, log func(string)) error {
+		if action != "client-import" {
+			t.Errorf("action = %s", action)
+		}
+		called <- in
+		return nil
+	}})
+	req := httptest.NewRequest("POST", "http://localhost/run?name=client-import", strings.NewReader(`{"source":"/source","destination":"/target","product":"wowf"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	select {
+	case in := <-called:
+		if in.Source != "/source" || in.Destination != "/target" || in.Product != "wowf" {
+			t.Fatalf("input %#v", in)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("import action never called")
+	}
+}
+
+func TestQuickCheckDoesNotBlockOrDuplicatePolling(t *testing.T) {
+	srv := New(t.TempDir(), "test", Actions{})
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	srv.quickCheck = func(string) (*install.Report, error) { started <- struct{}{}; <-release; return &install.Report{}, nil }
+	result := srv.cachedQuick("client")
+	if result.Checked {
+		t.Fatal("unchecked files reported intact")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("check did not start")
+	}
+	for i := 0; i < 10; i++ {
+		srv.cachedQuick("client")
+	}
+	select {
+	case <-started:
+		t.Fatal("duplicate disk scan")
+	default:
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for !srv.cachedQuick("client").Checked {
+		if time.Now().After(deadline) {
+			t.Fatal("result was not published")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !srv.cachedQuick("client").OK {
+		t.Fatal("intact result lost")
+	}
+	select {
+	case <-started:
+		t.Fatal("cached result scanned again")
+	default:
 	}
 }

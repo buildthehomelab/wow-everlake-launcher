@@ -118,7 +118,7 @@ static void elRun(const char *title, const char *url, int width, int height) {
 		elWindow.backgroundColor = [NSColor colorWithSRGBRed:0x0e/255.0 green:0x0d/255.0 blue:0x18/255.0 alpha:1];
 		elWindow.minSize = NSMakeSize(480, 420);
 		[elWindow center];
-		[elWindow setFrameAutosaveName:@"EverlakeLauncher"]; // reopens where the player left it
+		[elWindow setFrameAutosaveName:@"EverlakeLauncherCompact"]; // reopens where the player left it
 
 		NSView *root = [[NSView alloc] initWithFrame:frame];
 		WKWebView *web = [[WKWebView alloc] initWithFrame:frame configuration:[WKWebViewConfiguration new]];

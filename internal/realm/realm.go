@@ -239,11 +239,16 @@ func WriteWTF(gameDir, portal string) error {
 		text, _ = os.ReadFile(filepath.Join(dir, "Config.wtf"))
 	}
 	wanted := [][2]string{{"portal", portal}, {"textLocale", "enUS"}, {"audioLocale", "enUS"}}
+	// This launcher's private config explicitly disables narrated onboarding and
+	// screen narration on every launch. The player's original Config.wtf is untouched.
+	wanted = append(wanted, [2]string{"accessibilityScreenNarrationEnabled", "0"}, [2]string{"showScreenNarrationDialog", "0"})
+
 	var lines []string
 	for _, l := range strings.Split(strings.ReplaceAll(string(text), "\r\n", "\n"), "\n") {
 		keep := strings.TrimSpace(l) != ""
 		for _, w := range wanted {
-			if strings.HasPrefix(l, "SET "+w[0]+" ") {
+			fields := strings.Fields(l)
+			if len(fields) >= 2 && strings.EqualFold(fields[0], "SET") && strings.EqualFold(fields[1], w[0]) {
 				keep = false
 			}
 		}

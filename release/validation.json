@@ -1,0 +1,37 @@
+{
+  "platform": "macOS arm64",
+  "status": "validation in progress; not yet released",
+  "passed": [
+    "User confirmed packaged Forever account login reaches character selection",
+    "Retail login and realm list; realm compatibility intentionally deferred",
+    "Exact-build import to APFS, SHA256-verified source preservation",
+    "Forced interruption and resumed real Retail import",
+    "Real disk-full preflight on isolated 32 MiB volume",
+    "Real Retail streaming reuse: 143 loose files, 1802 data objects, zero downloaded bytes; deep verification passed",
+    "Windows-shaped older-source fixtures: intact, corrupt, missing, read-only source preservation",
+    "In-place single-product adoption with no second archive copy or cache; interrupted adoption resumes",
+    "Multi-product in-place adoption rejected",
+    "Native Keychain save/read/forget using a synthetic secret",
+    "Addon package metadata, preserved SavedVariables, corruption repair, Lua 5.1 execution for both profiles",
+    "APFS independent archive clones: 1086717952 bytes reclaimed in isolated real-archive test",
+    "Corrupt cache object and archive repair; unused owned archive reclamation; mixed good archives preserved",
+    "Go race suite, vet, Windows/Linux/macOS no-cgo cross-builds",
+    "Universal macOS app and helper packaging; ad-hoc signature verification"
+  ],
+  "pending": [
+    "Full Retail download and full verification on APFS",
+    "Final packaged UI, saved-login restart and narration checks",
+    "Live addon loading",
+    "CI and macOS publication"
+  ],
+  "excluded": [
+    "Retail realm joining: server will come later",
+    "Windows game runtime: machine available later"
+  ],
+  "limitations": [
+    "Mac app is ad-hoc signed, not notarized",
+    "Intel architecture compiled, not tested on physical Intel Mac",
+    "In-place update preserves user settings but does not retain a full old-build rollback copy",
+    "Encoded-object reuse is hash verified; only identical whole archives share APFS blocks"
+  ]
+}

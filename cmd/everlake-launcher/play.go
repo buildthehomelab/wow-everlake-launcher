@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,13 +35,13 @@ func cmdPlay(ctx context.Context, args []string) error {
 	email := fs.String("email", "", "account email (saved for next time)")
 	key := fs.String("server-key", "", "the realm's public key, 64 hex characters (saved; default: TrinityCore's stock key)")
 	ca := fs.String("ca", "", "a CA certificate to trust for the login server (saved; default: the system's)")
-	remember := fs.Bool("remember", false, "remember the password for this Windows user (encrypted with DPAPI); a "+
+	remember := fs.Bool("remember", false, "remember the password securely for this OS user; a "+
 		"remembered password is used when EVERLAKE_PASSWORD is empty")
 	fs.Parse(args)
 	if *dir == "" {
 		return fmt.Errorf("play: --dir is required")
 	}
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return gamepatch.ErrUnsupported
 	}
 	s, err := realm.LoadSettings(*dir)
@@ -100,7 +101,7 @@ func cmdPlay(ctx context.Context, args []string) error {
 // set, runs once the login server has accepted the password.
 func joinRealm(ctx context.Context, dir string, s realm.Settings, password string, signedIn func(),
 	log func(string)) (*gamepatch.Game, error) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return nil, gamepatch.ErrUnsupported
 	}
 	if err := s.Check(); err != nil {
@@ -113,9 +114,22 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 	if _, err := gamepatch.NewKeyPatcher(keyOrStock(s.ServerKey), groupOrDefault(s.RegionGroup)); err != nil {
 		return nil, fmt.Errorf("realm settings: %w", err)
 	}
-	st, err := install.ReadState(dir)
+	unlock, err := install.AcquireClient(dir)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", dir, install.ErrNoInstall)
+		return nil, err
+	}
+	tracked := false
+	defer func() {
+		if !tracked {
+			unlock()
+		}
+	}()
+	st, err := install.LaunchState(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", dir, err)
+	}
+	if err := install.CheckBuild(dir, st.Pin); err != nil {
+		return nil, err
 	}
 	exe := install.GameExe(dir, st.Pin.GameFolder)
 	if _, err := os.Stat(exe); err != nil {
@@ -127,6 +141,9 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 	login, err := realm.SignIn(ctx, s, nil, s.Email, password)
 	if err != nil {
 		return nil, err
+	}
+	if err := settings.Update(func(st *settings.Settings) { st.AccountEmail = s.Email; st.LoginHost = s.LoginHost }); err != nil {
+		log("Could not save account preferences: " + err.Error())
 	}
 	if signedIn != nil {
 		signedIn()
@@ -153,6 +170,14 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 	if err != nil {
 		return nil, err
 	}
+	if err := install.TrackClient(dir, game.Pid, game.Done, unlock); err != nil {
+		process, _ := os.FindProcess(game.Pid)
+		if process != nil {
+			process.Kill()
+		}
+		return nil, err
+	}
+	tracked = true
 	log(fmt.Sprintf("started the game (process %d)", game.Pid))
 	return game, nil
 }
@@ -160,10 +185,10 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 // uiPlay is the page's Play button: with a login server, join that realm; without one, start the game on its own.
 func uiPlay() func(ctx context.Context, dir string, in webui.PlayInput, log func(string)) error {
 	return func(ctx context.Context, dir string, in webui.PlayInput, log func(string)) error {
-		if in.Classic && (runtime.GOOS != "windows" || strings.TrimSpace(in.LoginHost) == "") {
+		if in.Classic && ((runtime.GOOS != "windows" && runtime.GOOS != "darwin") || strings.TrimSpace(in.LoginHost) == "") {
 			return fmt.Errorf("Classic requires Windows and a login server")
 		}
-		if strings.TrimSpace(in.LoginHost) == "" || runtime.GOOS != "windows" {
+		if strings.TrimSpace(in.LoginHost) == "" || (runtime.GOOS != "windows" && runtime.GOOS != "darwin") {
 			pid, err := install.Start(dir)
 			if err != nil {
 				return err
@@ -191,9 +216,9 @@ func uiPlay() func(ctx context.Context, dir string, in webui.PlayInput, log func
 			if s.Email == "" || password == "" {
 				return fmt.Errorf("email and password are needed to sign in")
 			}
-			dir, err = prepareClassic(ctx, dir, log)
-			if err != nil {
-				return err
+			state, err := install.ReadState(dir)
+			if err != nil || state.Pin.BuildConfig == pin.Default().BuildConfig {
+				return fmt.Errorf("install the shared client with the Classic overlay before playing Classic")
 			}
 		}
 		// The game outlives the job; its patches keep logging to the page and stop when it closes.
@@ -239,7 +264,7 @@ func trackGame(g *gamepatch.Game) {
 func gamesRunning() int {
 	gamesMu.Lock()
 	defer gamesMu.Unlock()
-	return len(games)
+	return len(games) + int(install.RunningClients())
 }
 
 // waitForGames returns once every tracked game has closed (or ctx ends).
@@ -256,11 +281,19 @@ func waitForGames(ctx context.Context) {
 func uiRealm() func(dir string) webui.RealmStatus {
 	return func(dir string) webui.RealmStatus {
 		s, _ := realm.LoadSettings(dir)
+		if st, err := settings.Load(); err == nil {
+			if s.Email == "" {
+				s.Email = st.AccountEmail
+			}
+			if s.LoginHost == "" {
+				s.LoginHost = st.LoginHost
+			}
+		}
 		saved := false
 		if st, err := settings.Load(); err == nil && s.LoginHost != "" && s.Email != "" {
 			saved = len(st.Passwords[settings.PasswordKey(s.LoginHost, s.Email)]) > 0
 		}
-		return webui.RealmStatus{LoginHost: s.LoginHost, Email: s.Email, Supported: runtime.GOOS == "windows",
+		return webui.RealmStatus{LoginHost: s.LoginHost, Email: s.Email, Supported: runtime.GOOS == "windows" || runtime.GOOS == "darwin",
 			CanRemember: secret.Available(), PasswordSaved: saved}
 	}
 }
@@ -286,8 +319,10 @@ func rememberedPassword(host, email string) (string, bool) {
 	return string(plain), true
 }
 
-// rememberPassword keeps a password that just signed in, sealed for this Windows user.
+// rememberPassword keeps a password that just signed in, protected for this OS user.
 func rememberPassword(host, email, password string, log func(string)) {
+	previous, _ := settings.Load()
+	old := previous.Passwords[settings.PasswordKey(host, email)]
 	sealed, err := secret.Seal([]byte(password))
 	if err == nil {
 		err = settings.Update(func(st *settings.Settings) {
@@ -298,10 +333,16 @@ func rememberPassword(host, email, password string, log func(string)) {
 		})
 	}
 	if err != nil {
+		if len(sealed) > 0 {
+			_ = secret.Forget(sealed)
+		}
 		log("note: couldn't remember the password: " + err.Error())
 		return
 	}
-	log("password remembered for this Windows user (encrypted; untick Remember password to forget it)")
+	if len(old) > 0 {
+		_ = secret.Forget(old)
+	}
+	log("Login saved securely for this user (untick Remember me to forget it)")
 }
 
 // forgetPassword drops a remembered password, if there is one.
@@ -309,6 +350,10 @@ func forgetPassword(host, email string, log func(string)) {
 	st, err := settings.Load()
 	key := settings.PasswordKey(host, email)
 	if err != nil || len(st.Passwords[key]) == 0 {
+		return
+	}
+	if err := secret.Forget(st.Passwords[key]); err != nil {
+		log("note: couldn't remove saved login: " + err.Error())
 		return
 	}
 	if err := settings.Update(func(st *settings.Settings) { delete(st.Passwords, key) }); err != nil {

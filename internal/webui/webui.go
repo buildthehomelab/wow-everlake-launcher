@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 )
 
 //go:embed page.html
@@ -28,10 +29,14 @@ var files embed.FS
 // reach the page. Play gets what the player typed. They are injected so the package needs no network of its own and
 // can be tested with fakes.
 type Actions struct {
-	EraMaps func(ctx context.Context, dir string, log func(string)) error
-	Install func(ctx context.Context, dir string, log func(string)) error
-	Verify  func(ctx context.Context, dir string, log func(string)) error
-	Play    func(ctx context.Context, dir string, in PlayInput, log func(string)) error
+	Client       func(context.Context, string, string, PlayInput, func(string)) error
+	RetailPlay   func(context.Context, string, PlayInput, func(string)) error
+	RetailStatus func(dir string) (version, note string, ready bool)
+	Retail       func(ctx context.Context, dir, action string, log func(string)) error
+	EraMaps      func(ctx context.Context, dir string, log func(string)) error
+	Install      func(ctx context.Context, dir string, log func(string)) error
+	Verify       func(ctx context.Context, dir string, log func(string)) error
+	Play         func(ctx context.Context, dir string, in PlayInput, log func(string)) error
 	// Realm reports the realm settings saved in an install folder, to fill in the page's sign-in fields.
 	Realm func(dir string) RealmStatus
 
@@ -57,11 +62,15 @@ type Actions struct {
 
 // PlayInput is the sign-in the page sends with Play. An empty LoginHost starts the game without joining a realm.
 type PlayInput struct {
-	Classic   bool   `json:"classic"`
-	LoginHost string `json:"login_host"`
-	Email     string `json:"email"`
-	Password  string `json:"password"` // empty: use the remembered one
-	Remember  bool   `json:"remember"` // keep the password once it signs in; false forgets a remembered one
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Product     string `json:"product"`
+	PinJSON     string `json:"pin_json"`
+	Classic     bool   `json:"classic"`
+	LoginHost   string `json:"login_host"`
+	Email       string `json:"email"`
+	Password    string `json:"password"` // empty: use the remembered one
+	Remember    bool   `json:"remember"` // keep the password once it signs in; false forgets a remembered one
 }
 
 // RealmStatus is what the page shows about joining a realm.
@@ -88,9 +97,15 @@ var schoolName = regexp.MustCompile(`^[a-z]{1,16}$`)
 
 // Server is the launcher's local page.
 type Server struct {
-	dir     string
-	version string
-	act     Actions
+	quickCheck      func(string) (*install.Report, error)
+	quickDir        string
+	quickAt         time.Time
+	quickRunning    bool
+	quickGeneration uint64
+	quickResult     quickStatus
+	dir             string
+	version         string
+	act             Actions
 
 	mu     sync.Mutex
 	busy   string // the running job's name, or ""
@@ -106,7 +121,7 @@ type Server struct {
 
 // New makes a server, starting on one install folder; the page can move it to another (POST /folder).
 func New(dir, version string, act Actions) *Server {
-	return &Server{dir: dir, version: version, act: act, subs: map[chan string]struct{}{}, lastSeen: time.Now()}
+	return &Server{quickCheck: install.QuickVerify, dir: dir, version: version, act: act, subs: map[chan string]struct{}{}, lastSeen: time.Now()}
 }
 
 // Unwatched reports whether no page has been open for at least d and no job is running: a launcher shown in the
@@ -218,21 +233,64 @@ func (s *Server) look(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusResp struct {
-	Dir       string      `json:"dir"`
-	CanPick   bool        `json:"can_pick"` // the page may offer the system's folder dialog
-	Version   string      `json:"version"`
-	Launcher  string      `json:"launcher,omitempty"`
-	Notice    string      `json:"notice,omitempty"`
-	Installed bool        `json:"installed"`
-	Busy      string      `json:"busy"`
-	Realm     RealmStatus `json:"realm"`
-	Quick     struct {
-		Checked bool   `json:"checked"`
-		OK      bool   `json:"ok"`
-		Changed int    `json:"changed"`
-		Missing int    `json:"missing"`
-		Note    string `json:"note"`
-	} `json:"quick"`
+	RetailVersion    string      `json:"retail_version"`
+	RetailNote       string      `json:"retail_note"`
+	RetailReady      bool        `json:"retail_ready"`
+	Dir              string      `json:"dir"`
+	CanPick          bool        `json:"can_pick"` // the page may offer the system's folder dialog
+	Version          string      `json:"version"`
+	Launcher         string      `json:"launcher,omitempty"`
+	Notice           string      `json:"notice,omitempty"`
+	Installed        bool        `json:"installed"`
+	ClassicInstalled bool        `json:"classic_installed"`
+	Busy             string      `json:"busy"`
+	Realm            RealmStatus `json:"realm"`
+	Quick            quickStatus `json:"quick"`
+}
+
+type quickStatus struct {
+	Checked bool   `json:"checked"`
+	OK      bool   `json:"ok"`
+	Changed int    `json:"changed"`
+	Missing int    `json:"missing"`
+	Note    string `json:"note"`
+}
+
+// File inspection must not block status polling or multiply disk scans when a
+// USB drive is busy installing another client.
+func (s *Server) cachedQuick(dir string) quickStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.quickDir != dir {
+		s.quickDir = dir
+		s.quickAt = time.Time{}
+		s.quickRunning = false
+		s.quickResult = quickStatus{Note: "Checking local files…"}
+	}
+	if !s.quickRunning && time.Since(s.quickAt) > time.Minute {
+		s.quickRunning = true
+		s.quickGeneration++
+		generation := s.quickGeneration
+		go func() {
+			result := quickStatus{}
+			if rep, err := s.quickCheck(dir); err == nil {
+				result.Checked = true
+				result.OK = !rep.Failed()
+				result.Changed = len(rep.Bad)
+				result.Missing = len(rep.Missing)
+			} else {
+				result.Note = err.Error()
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.quickDir == dir && s.quickGeneration == generation {
+				s.quickResult = result
+				s.quickAt = time.Now()
+				s.quickRunning = false
+			}
+		}()
+	}
+	return s.quickResult
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -241,19 +299,18 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	resp.Dir, resp.Busy, resp.Notice = s.dir, s.busy, s.notice
 	s.mu.Unlock()
 	resp.Version, resp.Launcher = s.version, s.act.LauncherVersion
+	if s.act.RetailStatus != nil {
+		resp.RetailVersion, resp.RetailNote, resp.RetailReady = s.act.RetailStatus(resp.Dir)
+	}
 	resp.CanPick = s.act.PickFolder != nil
 	if s.act.Realm != nil {
 		resp.Realm = s.act.Realm(resp.Dir)
 	}
-	if _, err := install.ReadState(resp.Dir); err == nil {
+	if state, err := install.LaunchState(resp.Dir); err == nil {
 		resp.Installed = true
-		if rep, err := install.QuickVerify(resp.Dir); err == nil {
-			resp.Quick.Checked = true
-			resp.Quick.OK = !rep.Failed()
-			resp.Quick.Changed, resp.Quick.Missing = len(rep.Bad), len(rep.Missing)
-		} else {
-			resp.Quick.Note = err.Error()
-		}
+		base := pin.Default()
+		resp.ClassicInstalled = state.Pin.Product == base.Product && state.Pin.Version == base.Version && state.Pin.BuildConfig != base.BuildConfig && state.Pin.CDNConfig != base.CDNConfig
+		resp.Quick = s.cachedQuick(resp.Dir)
 	}
 	writeJSON(w, resp)
 }
@@ -264,12 +321,12 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("name")
-	if name != "install" && name != "verify" && name != "play" && name != "era-maps" {
+	if name != "install" && name != "verify" && name != "play" && name != "era-maps" && name != "retail-stream" && name != "retail-install" && name != "retail-verify" && name != "retail-play" && name != "client-inspect" && name != "client-adopt" && name != "client-reuse" && name != "client-import" && name != "client-configure" {
 		http.Error(w, "unknown job", http.StatusBadRequest)
 		return
 	}
 	var in PlayInput
-	if name == "play" {
+	if name == "play" || name == "retail-play" || strings.HasPrefix(name, "client-") {
 		// JSON only: a browser won't send that cross-origin without asking first, unlike a form or text/plain post.
 		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 			http.Error(w, "play takes application/json", http.StatusUnsupportedMediaType)
@@ -335,6 +392,7 @@ func (s *Server) begin(name string, job func(dir string) error) (string, bool) {
 		s.broadcast("=== done ===")
 		s.mu.Lock()
 		s.busy = ""
+		s.quickAt = time.Time{}
 		s.mu.Unlock()
 	}()
 	return "", true
@@ -343,6 +401,21 @@ func (s *Server) begin(name string, job func(dir string) error) (string, bool) {
 func (s *Server) do(name, dir string, in PlayInput) error {
 	ctx := context.Background()
 	switch name {
+	case "client-inspect", "client-import", "client-reuse", "client-adopt", "client-configure":
+		if s.act.Client == nil {
+			return fmt.Errorf("client management unavailable")
+		}
+		return s.act.Client(ctx, dir, name, in, s.broadcast)
+	case "retail-play":
+		if s.act.RetailPlay == nil {
+			return fmt.Errorf("Retail login unavailable")
+		}
+		return s.act.RetailPlay(ctx, dir, in, s.broadcast)
+	case "retail-stream", "retail-install", "retail-verify":
+		if s.act.Retail == nil {
+			return fmt.Errorf("Retail is unavailable")
+		}
+		return s.act.Retail(ctx, dir, name, s.broadcast)
 	case "era-maps":
 		if s.act.EraMaps == nil {
 			return fmt.Errorf("Era map downloads are unavailable")

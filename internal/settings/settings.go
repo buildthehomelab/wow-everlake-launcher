@@ -17,7 +17,11 @@ import (
 
 // Settings is launcher.json.
 type Settings struct {
-	InstallDir string `json:"install_dir,omitempty"`
+	AccountEmail string          `json:"account_email,omitempty"`
+	LoginHost    string          `json:"login_host,omitempty"`
+	RetailPin    json.RawMessage `json:"retail_pin,omitempty"`
+	RetailDir    string          `json:"retail_dir,omitempty"`
+	InstallDir   string          `json:"install_dir,omitempty"`
 	// Passwords are remembered passwords, sealed for this user (internal/secret), by PasswordKey.
 	Passwords map[string][]byte `json:"passwords,omitempty"`
 	// AutoUpdate false stops the launcher updating itself; missing means on.

@@ -33,10 +33,10 @@ type Options struct {
 // shown anything, when no window can be made here.
 func Run(o Options) error {
 	if o.Width <= 0 {
-		o.Width = 900
+		o.Width = 540
 	}
 	if o.Height <= 0 {
-		o.Height = 760
+		o.Height = 820
 	}
 	return run(o)
 }
