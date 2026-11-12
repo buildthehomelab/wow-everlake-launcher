@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 )
@@ -38,6 +39,11 @@ func TestImportResumesAndPreservesProducts(t *testing.T) {
 	}
 	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("published incomplete import: %v", err)
+	}
+	// Metadata-only directory changes must not invalidate a file-content snapshot.
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(filepath.Join(source, "Data"), later, later); err != nil {
+		t.Fatal(err)
 	}
 	target := filepath.Join(dest+".everlake-import", "client", "Data", "data", "data.000")
 	if err := writeFile(target, []byte("broken"), 0644); err != nil {

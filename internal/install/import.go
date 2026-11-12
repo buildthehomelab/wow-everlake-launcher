@@ -202,6 +202,12 @@ func Import(ctx context.Context, source, dest string, p pin.Pin, log func(string
 			return fmt.Errorf("unsupported source entry %s (%s)", path, info.Mode())
 		}
 		e := importEntry{Path: rel, Mode: info.Mode(), Size: info.Size(), ModNS: info.ModTime().UnixNano()}
+		// Directory timestamps and allocation sizes may settle asynchronously on
+		// Windows. Membership and each file's content identify the snapshot.
+		if info.IsDir() {
+			e.Size = 0
+			e.ModNS = 0
+		}
 		if !info.IsDir() {
 			e.Digest, err = hashImport(ctx, path, io.Discard)
 			if err != nil {
@@ -220,6 +226,18 @@ func Import(ctx context.Context, source, dest string, p pin.Pin, log func(string
 	}
 	journalPath := filepath.Join(stage, "journal.json")
 	previous, err := os.ReadFile(journalPath)
+	if err == nil {
+		var old importJournal
+		if json.Unmarshal(previous, &old) == nil {
+			for i := range old.Entries {
+				if old.Entries[i].Mode.IsDir() {
+					old.Entries[i].Size = 0
+					old.Entries[i].ModNS = 0
+				}
+			}
+			previous, _ = json.Marshal(old)
+		}
+	}
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if err := writeFile(journalPath, encoded, 0600); err != nil {
@@ -228,7 +246,23 @@ func Import(ctx context.Context, source, dest string, p pin.Pin, log func(string
 	case err != nil:
 		return err
 	case string(previous) != string(encoded):
-		return fmt.Errorf("source inventory changed since staging; keep %s for recovery and choose a new destination", stage)
+		var old importJournal
+		detail := "inventory"
+		if json.Unmarshal(previous, &old) == nil {
+			if old.Source != journal.Source {
+				detail = "source path"
+			} else if len(old.Entries) != len(journal.Entries) {
+				detail = "entry count"
+			} else {
+				for i, e := range journal.Entries {
+					if old.Entries[i] != e {
+						detail = fmt.Sprintf("%s (size %d/%d, mtime %d/%d, mode %v/%v)", e.Path, old.Entries[i].Size, e.Size, old.Entries[i].ModNS, e.ModNS, old.Entries[i].Mode, e.Mode)
+						break
+					}
+				}
+			}
+		}
+		return fmt.Errorf("source inventory changed since staging: %s; keep %s for recovery and choose a new destination", detail, stage)
 	}
 	tree := filepath.Join(stage, "client")
 	if err := importDirectory(tree); err != nil {
