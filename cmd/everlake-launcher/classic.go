@@ -31,9 +31,23 @@ type classicOverlay struct {
 }
 
 func installSharedClient(ctx context.Context, dir string, verify bool, log func(string)) error {
+	return installSharedClientMode(ctx, dir, verify, false, false, log)
+}
+
+// In-place adoption must retain the shared overlay instead of reverting to the base Forever pin.
+func installSharedClientMode(ctx context.Context, dir string, verify, adopt, streaming bool, log func(string)) error {
+	options := func() install.Options {
+		opts := installOptions(ctx, dir, verify)
+		opts.Adopt = adopt
+		if streaming {
+			priority := 0
+			opts.MaxPriority = &priority
+		}
+		return opts
+	}
 	if verify {
 		if state, err := install.ReadState(dir); err == nil && state.Pin.BuildConfig == pin.Default().BuildConfig {
-			return runInstall(ctx, installOptions(ctx, dir, true), log)
+			return runInstall(ctx, options(), log)
 		}
 	}
 	if !verify && gamesRunning() != 0 {
@@ -54,7 +68,7 @@ func installSharedClient(ctx context.Context, dir string, verify bool, log func(
 				state.Pin.BuildConfig != pin.Default().BuildConfig {
 				return fmt.Errorf("restore the shared client overlay before verifying or repairing this install")
 			}
-			return runInstall(ctx, installOptions(ctx, dir, verify), log)
+			return runInstall(ctx, options(), log)
 		}
 		if closeOverlay != nil {
 			defer closeOverlay()
@@ -78,9 +92,9 @@ func installSharedClient(ctx context.Context, dir string, verify bool, log func(
 		return fmt.Errorf("Classic overlay pin: %w", err)
 	}
 
-	opts := installOptions(ctx, dir, verify)
+	opts := options()
 	opts.Pin = p
-	if !verify {
+	if !verify && !streaming {
 		if state, err := install.ReadState(dir); err == nil {
 			opts.NoData, opts.MaxPriority = state.NoData, state.MaxPriority
 		}

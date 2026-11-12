@@ -1,0 +1,16 @@
+Opt-in Windows test build for Forever and the Everlake Classic–Wrath prototype using one shared client, including in-place updates without a second game copy. This prerelease does not replace the stable Mac release or automatically update existing Windows launchers.
+
+Download everlake-launcher-windows-amd64.exe (the windowed launcher). The CLI executable is optional.
+
+1. Close World of Warcraft and Battle.net.
+2. Open Use an existing installation and choose Forever.
+3. Set Existing client folder to the root containing .build.info and Data, not the _forever_ subfolder. Leave New destination folder empty.
+4. Click Update existing installation in place. Existing content is hash-checked; only missing or damaged content downloads. This mode creates no second client or duplicate asset cache. Addons and WTF settings are preserved. Some free space is still needed for changed files, and the old build is replaced rather than retained as a rollback copy.
+5. The Classic–Wrath prototype uses the same client and Data folder. Keep its existing _era_/overlay folder in place (or the configured EVERLAKE_CLIENT_CDN mirror available). In-place updates retain that overlay build. After updating, test both Play and Play Classic–Wrath prototype. This does not install a separate Blizzard Classic client.
+6. If interrupted, repeat the same action with the same folder. After success, use Change beside the launcher's folder to select that root, then Verify files and Play.
+
+Single-product Forever roots are supported. A shared Battle.net root containing multiple products is rejected without adopting it. Do not use Import / resume or Install using existing files for this low-space test: those options create a separate copy.
+
+Automated coverage includes Windows-native tests, window loading, no duplicate client/cache, zero-download matching installs, selective corruption repair, interrupted adoption/resume, and preservation of addons/settings. Live gameplay on the user's Windows PC remains to be tested. Retail realm joining is excluded.
+
+The executables are unsigned. SHA256SUMS.txt is included for integrity checks. Report any launcher error and preserve its log before retrying.

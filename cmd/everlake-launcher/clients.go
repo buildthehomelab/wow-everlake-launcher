@@ -90,6 +90,12 @@ func cmdClients(ctx context.Context, args []string) error {
 		}
 		return install.Import(ctx, *source, *dir, p, log)
 	case "install", "verify":
+		if args[0] == "install" && *adopt && p.Product == "wowf" {
+			if *source != "" {
+				return fmt.Errorf("in-place update does not use a separate source")
+			}
+			return installSharedClientMode(ctx, *dir, false, true, *bootstrap, log)
+		}
 		if (*source != "" || *adopt) && args[0] == "install" {
 			hosts := p.Hosts(ctx, nil)
 			opts := install.Options{Adopt: *adopt, Dir: *dir, ReuseFrom: *source, Pin: p, Tags: splitTags(defaultTags()), Jobs: 8, GameHosts: hosts, CDN: cdn.New(hosts, p.CDNPath)}
@@ -276,7 +282,11 @@ func clientAction(ctx context.Context, dir, action string, in webui.PlayInput, l
 	} else if in.Product != "wowf" {
 		return fmt.Errorf("choose Forever or Retail")
 	}
-	if action == "client-adopt" {
+	if action == "client-adopt" && p.Product == "wowf" {
+		if err := installSharedClientMode(ctx, in.Source, false, true, false, log); err != nil {
+			return err
+		}
+	} else if action == "client-adopt" {
 		hosts := p.Hosts(ctx, nil)
 		if err := runInstall(ctx, install.Options{Dir: in.Source, Adopt: true, Pin: p, Tags: splitTags(defaultTags()), Jobs: 8, GameHosts: hosts, CDN: cdn.New(hosts, p.CDNPath)}, log); err != nil {
 			return err
