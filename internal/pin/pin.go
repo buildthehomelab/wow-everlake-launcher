@@ -129,3 +129,15 @@ func Live(ctx context.Context, product, region, gameFolder, flavor string) (Pin,
 	}
 	return p, p.Check()
 }
+
+//go:embed wow.json
+var retailJSON []byte
+
+// Retail is pinned to the client supported by the recorded TrinityCore revision.
+func Retail() Pin {
+	p, err := Parse(retailJSON)
+	if err != nil {
+		panic("embedded Retail pin: " + err.Error())
+	}
+	return p
+}

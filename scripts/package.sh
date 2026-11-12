@@ -54,6 +54,9 @@ macos)
 	done
 	app="$work/Everlake Launcher.app"
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    clang -x c -O2 -dynamiclib -arch arm64 -arch x86_64 \
+        internal/gamepatch/macos/keypatch.c.txt -o "$app/Contents/Resources/keypatch.dylib"
+    codesign --force --sign - "$app/Contents/Resources/keypatch.dylib"
 	# The app icon, from assets/icon-macos.png (rendered from assets/icon.html) in every size macOS uses.
 	iconset=$work/AppIcon.iconset
 	mkdir "$iconset"
@@ -81,12 +84,14 @@ macos)
 	<key>LSMinimumSystemVersion</key><string>$macos</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.games</string>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>NSMicrophoneUsageDescription</key><string>World of Warcraft launched by Everlake uses your microphone for in-game voice chat.</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 	<key>NSAppTransportSecurity</key>
 	<dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 EOF
+	/usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist" >/dev/null
 	# Not notarised: an ad-hoc signature, which Apple silicon needs to run it at all.
 	codesign --force --sign - "$app"
 	codesign --verify --strict "$app"

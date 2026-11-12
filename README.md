@@ -170,7 +170,7 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
 
 ## Joining a realm
 
-`play` (Windows) does what Battle.net does for Blizzard's realms, against a TrinityCore login server:
+`play` supports Windows and macOS. The Windows launch flow does what Battle.net does for Blizzard's realms, against a TrinityCore login server:
 
 1. Signs in with your email and password (asked for; or `EVERLAKE_PASSWORD`; or the remembered one) over HTTPS on
    port 8081, and gets a
@@ -196,13 +196,15 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
      is fine; it keeps running in the background).
 
 The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password isn't.
-**Remember password** (or `play --remember`) keeps it after a sign-in succeeds, encrypted with DPAPI for your Windows
-user, in the launcher's own `launcher.json` (never in the install folder, never sent back to the page). With the
+**Remember me** (or `play --remember`) keeps it after a sign-in succeeds. Windows encrypts it with DPAPI for your
+user in the launcher's own `launcher.json`; macOS stores it in Keychain and keeps only an opaque reference in that
+file. It is never stored in the install folder or sent back to the page. With the
 password field left empty, Play uses it; unticking the box forgets it on the next Play, and a password the login
 server refuses is forgotten.
 The key table follows jibay442/forever_docker and Karrz1/Karrz-playerbots-wow-forever's Windows launcher; the
-login-name patch follows Arctium's launcher. On macOS, `wow-project-everlake`'s `client/macos/keypatch.c` patches
-from inside the game.
+login-name patch follows Arctium's launcher. On macOS, the launcher writes the login ticket to Battle.net preferences
+and launches a private app copy using its bundled helper, derived from `wow-project-everlake`'s
+`client/macos/keypatch.c`. The original game app is preserved.
 
 ## The mirror (our own CDN)
 
@@ -270,3 +272,133 @@ settings are untouched. Cataclysm needs a verified CDN donor.
 Run **Download Era maps** again to retry failed transfers. The launcher reuses
 verified files and skips completed maps. See `_era_/logs/missing-files.tsv`
 for the map, FileDataID, known asset path, and reason for each remaining gap.
+
+### Shared Forever and Classic client
+
+For a launcher deployment with a combined Forever and Classic build, set
+`EVERLAKE_CLIENT_CDN` to the origin of the Everlake mirror serving the overlay.
+The desktop installer reads `/everlake/build.json` from that origin and uses
+the same mirror for the combined build's CDN objects. The mirror can fetch
+unchanged objects from Blizzard. **Install** and **Update** use the selected
+game folder and reuse intact objects already in its CASC store.
+
+For local testing, place the built overlay (including `build.json` and
+`tpr/`) under `_era_/overlay` in the install folder, or in `Classic-overlay`
+beside the launcher executable. Leave `EVERLAKE_CLIENT_CDN` unset to use the
+local package. Classic becomes available after the combined build is installed
+on a supported platform.
+
+### Separate Retail client and existing installations
+
+Forever and the Classic–Wrath prototype use the Forever client. Retail needs a
+separate `wow` installation with game folder `_retail_` and flavor `wow`.
+The launcher includes the supported Retail pin; reviewed JSON overrides can be saved in Retail build configuration.
+The optional `EVERLAKE_RETAIL_PIN` environment variable overrides the saved build. The desktop uses a sibling install folder
+with `-Retail` appended to the selected Forever root. Retail Play uses the shared account form and its own realm settings.
+
+```sh
+everlake-launcher clients discover "/path/to/World of Warcraft"
+everlake-launcher clients import --source "/path/to/World of Warcraft" --dir "/path/to/Everlake-Retail" --retail-pin "/path/to/retail.json"
+everlake-launcher clients verify --dir "/path/to/Everlake-Retail" --retail-pin "/path/to/retail.json"
+```
+
+Close the game and Battle.net before importing. Use an unused destination with
+an existing parent folder. Import accepts a single active build that matches the
+selected pin, including both config keys. It copies the original build manifests,
+local data, addons and WTF files. A Battle.net copy has no recorded Everlake
+download coverage. The import verifies the copied bytes and keeps the original
+intact. A Battle.net root containing several active products needs separate
+validation before it can be imported.
+
+Rerun the same import command after interruption to resume from the journal in
+`NEW_ROOT.everlake-import`. If the source changes, use a new destination. After
+publication the original still serves as recovery, and the staging directory
+holds the journal. Select the original installation to revert to it. Keep the
+original until you've verified and played the managed copy.
+
+Allow enough free space for an independent copy. The migration does not share
+writable CASC containers, addon folders or SavedVariables between products.
+Retail streaming downloads assets to disk as needed.
+
+The desktop's Import an existing client section inspects a source folder and
+reports its regular-file count and byte size before copying. It accepts the
+same source and destination on a retry. Retail imports save their destination
+as the Retail install path. After a Forever import, select its destination
+using Change. Retail's saved build configuration persists across app restarts.
+
+Retail defaults to 12.1.5.70783, supported by TrinityCore master commit
+4d146b59c47d60007ffc5fca89d45339814b6dba (the 2026-11-04 auth update).
+The compiled pin includes Blizzard's build and CDN config keys.
+Retail configuration is an optional override.
+
+Use Install Retail for streaming to download loose client files and
+priority-zero assets first. Further assets download to disk during play.
+Download full Retail client fetches the remaining manifest content.
+The CLI equivalents are `clients install --retail --streaming --dir ROOT`
+and `clients install --retail --dir ROOT`. Verification and launch accept
+`--retail` as well. `show --retail` reports the pinned download manifests.
+
+### Account login and shared assets
+
+Forever and Retail use the same account form and remember the last successful
+login host and email. Realm ports, server keys and client settings remain in
+each client installation. Windows uses the existing DPAPI ticket handoff.
+macOS uses the project's existing ticket encryption and patch helper, creating
+a temporary signed app copy for each realm launch. Release apps include the universal patch helper. Source-only development builds
+need Apple's command-line tools to compile it. The official downloaded app is retained.
+
+Verified encoded objects are cached in `.everlake-assets` beside the client folder
+on the same drive (`EVERLAKE_ASSET_STORE` overrides this location). Each object is checked against its encoded key before reuse.
+Different encoded variants have distinct keys. This can reduce repeat downloads.
+On filesystems supporting macOS copy-on-write cloning, complete byte-identical
+CASC archives also share disk blocks through independent files. Client indexes,
+manifests and writable paths remain independent. Unsupported filesystems retain
+ordinary client archives. The cache itself uses disk space, and logical byte
+counts do not establish physical savings.
+
+The launcher never deduplicates addons or SavedVariables across client products.
+
+### Reusing an older client on a slow connection
+
+Choose **Install using existing files**, enter the existing World of Warcraft
+root (the folder containing `.build.info` and `Data`), and a separate destination.
+The source can be an older build or a multi-product Battle.net installation.
+Keep the game and Battle.net closed during the operation. The source is read-only.
+
+The target manifest decides what is reusable: encoded keys and BLTE chunk
+checksums are checked for stored assets, and content hashes for loose files.
+Missing, changed, or damaged content downloads from the CDN. Older executables
+are never used merely because their names match. Configuration, addon settings,
+and account files are not copied by this reuse operation; exact-build import
+remains available when a complete migration is wanted. The destination requires
+space for an independent client; rerun with the same folders to resume.
+
+```powershell
+.\everlake-launcher-cli-windows-amd64.exe clients install --retail --source "D:\Games\World of Warcraft" --dir "D:\Everlake\Retail"
+```
+
+Add `--streaming` for launch assets first. Matching assets already on disk save
+bandwidth; metadata and genuinely missing target-build assets still need internet.
+
+### Low-space in-place updates
+
+Use **Update existing installation in place** to take over an existing single-product
+client root. On the CLI, use `clients install --retail --in-place --dir ROOT`
+(add `--streaming` for launch assets first). This updates that folder directly,
+verifies existing assets, and downloads replacements without creating a second
+client or an object-cache copy. The low-space choice persists for later updates.
+Close Battle.net and the game first. Multi-product Battle.net roots are rejected
+because their data may be shared with another installed product.
+
+Addons and WTF/SavedVariables are preserved. The original build metadata is
+backed up, but there is no complete old-build rollback copy. Space for changed
+assets is checked; a full successful update can remove unreferenced adopted
+archives. Mixed archives remain while they still contain good referenced assets.
+
+### Saved login and game accessibility
+
+The Mac launcher offers **Remember me**. Passwords stay in macOS Keychain;
+launcher settings contain only opaque references. Windows retains DPAPI.
+Unchecking Remember me on a successful login forgets the stored credential.
+The private Everlake game config explicitly disables screen narration and its
+onboarding prompt on launch; the original Config.wtf is not changed.

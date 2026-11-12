@@ -767,3 +767,67 @@ func TestRealKeyTables(t *testing.T) {
 	}
 	t.Logf("%d tables (%d with a key listed twice), %d update slots", len(names), repeated, slots)
 }
+
+func TestRepairReclaimsOnlyUnreferencedOwnedArchives(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data")
+	own := filepath.Join(root, "archives.json")
+	s, err := Open(dir, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ka := tacttest.Plain([]byte("damaged asset replacement"))
+	b, kb := tacttest.Plain([]byte("good asset retained"))
+	if err := s.Add(ka, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(kb, b); err != nil {
+		t.Fatal(err)
+	}
+	loc, _ := s.Lookup(ka)
+	old := s.archivePath(loc.Archive)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Add(ka, a); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := s.ReclaimUnreferenced()
+	if err != nil || n != 0 {
+		t.Fatalf("mixed archive removed: %d %v", n, err)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Read(kb); err != nil || !bytes.Equal(got, b) {
+		t.Fatal("good asset lost")
+	}
+	if err := s.Add(kb, b); err != nil {
+		t.Fatal(err)
+	}
+	n, size, err := s.ReclaimUnreferenced()
+	if err != nil || n != 1 || size <= 0 {
+		t.Fatalf("orphan not reclaimed: %d %d %v", n, size, err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old archive remains: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = OpenReadOnly(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, k := range []tact.Key{ka, kb} {
+		if _, err := s.Read(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

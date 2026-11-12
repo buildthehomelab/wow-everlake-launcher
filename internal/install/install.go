@@ -29,6 +29,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/addons"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/assets"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/casc"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/cdn"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
@@ -37,11 +39,15 @@ import (
 
 // Options say what to put where.
 type Options struct {
-	Dir  string
-	Pin  pin.Pin
-	CDN  *cdn.Client
-	Tags []string // e.g. OSX, arm64, enUS, US: picks the install and download manifest entries
-	Jobs int      // parallel requests
+	Adopt      bool   // explicitly update an existing single-product installation in place
+	LowSpace   bool   // reuse local data without duplicating it in an object cache
+	ReuseFrom  string // optional older client root; only verified matching content is copied
+	AssetStore string
+	Dir        string
+	Pin        pin.Pin
+	CDN        *cdn.Client
+	Tags       []string // e.g. OSX, arm64, enUS, US: picks the install and download manifest entries
+	Jobs       int      // parallel requests
 
 	// Verify checks what's on disk and writes nothing. It reports every damaged or missing file. Configs, indexes and
 	// manifests it needs in order to go on are read from the CDN when the copy on disk is bad (and reported too).
@@ -87,6 +93,7 @@ type run struct {
 	downloaded  atomic.Int64
 	build, cdc  tact.Config
 	enc         *tact.Encoding
+	reuse       *casc.Storage
 	st          *casc.Storage   // the game's local storage, Data/data
 	prev        *State          // the install already in the folder, if any (to detect an update and prune)
 	dataKeep    []tact.Key      // every stored key this install wants (for pruning the rest on an update)
@@ -117,6 +124,15 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	if opts.Log == nil {
 		opts.Log = func(string, ...any) {}
 	}
+	if state, err := ReadState(opts.Dir); err == nil && state.LowSpace {
+		opts.LowSpace = true
+	}
+	if opts.Adopt {
+		opts.LowSpace = true
+	}
+	if opts.LowSpace {
+		opts.AssetStore = ""
+	}
 	r := &run{Options: opts, reported: map[string]bool{}}
 	r.rep.Version, r.rep.BuildConfig, r.rep.CDNConfig = opts.Pin.Version, opts.Pin.BuildConfig, opts.Pin.CDNConfig
 	r.rep.Where = opts.Dir
@@ -127,17 +143,86 @@ func Run(ctx context.Context, opts Options) (*Report, error) {
 	} else if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
+	if !opts.Verify && !opts.Adopt {
+		if err := checkInstallTarget(opts.Dir, opts.Pin); err != nil {
+			return nil, err
+		}
+	}
 	unlock, err := lockFolder(opts.Dir, opts.Verify)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	if err := checkRunningClient(opts.Dir); err != nil {
+		return nil, err
+	}
+	if !opts.Verify {
+		if opts.Adopt {
+			if opts.ReuseFrom != "" {
+				return nil, fmt.Errorf("in-place update does not use a separate source")
+			}
+			if err := adoptTarget(opts.Dir, opts.Pin, opts.Tags); err != nil {
+				return nil, err
+			}
+		}
+		if err := checkInstallTarget(opts.Dir, opts.Pin); err != nil {
+			return nil, err
+		}
+	}
+	if opts.ReuseFrom != "" {
+		if opts.Verify {
+			return nil, fmt.Errorf("reuse is only available during installation")
+		}
+		closeSource, err := r.openReuse()
+		if err != nil {
+			return nil, err
+		}
+		defer closeSource()
+	}
+	pending := filepath.Join(opts.Dir, ".everlake", "pending.json")
+	if !opts.Verify {
+		record, err := json.Marshal(opts.Pin)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeFile(pending, record, 0600); err != nil {
+			return nil, err
+		}
+	}
 	stop := r.progress()
 	defer stop()
 	rep, err := r.do(ctx)
 	if r.st != nil {
 		if e := r.st.Close(); e != nil && err == nil {
 			return nil, fmt.Errorf("local storage: %w", e)
+		}
+	}
+	if !opts.Verify && err == nil && rep != nil && !rep.Failed() {
+		if opts.AssetStore != "" {
+			archives, e := filepath.Glob(filepath.Join(opts.Dir, "Data", "data", "data.*"))
+			if e != nil {
+				return nil, e
+			}
+			for _, archive := range archives {
+				shared, e := (assets.Store{Root: opts.AssetStore}).ShareArchive(archive)
+				if e != nil {
+					return nil, e
+				}
+				if shared {
+					opts.Log("Copy-on-write archive prepared: %s", filepath.Base(archive))
+				}
+			}
+		}
+		if opts.Pin.Version == pin.Default().Version || opts.Pin.Version == pin.Retail().Version {
+			if err := addons.Install(opts.Dir, opts.Pin); err != nil {
+				return nil, err
+			}
+		}
+		err = os.Remove(pending)
+	}
+	if opts.Verify && err == nil {
+		if e := addons.Verify(opts.Dir, opts.Pin); e != nil {
+			return rep, e
 		}
 	}
 	return rep, err
@@ -160,7 +245,14 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 	if !opts.Verify {
 		r.prev, _ = ReadState(opts.Dir)
 		if r.prev != nil && r.prev.Pin.BuildConfig != opts.Pin.BuildConfig {
-			opts.Log("updating Forever %s → %s (old-build files are removed after)", r.prev.Pin.Version, opts.Pin.Version)
+			product := opts.Pin.Product
+			if product == "wowf" {
+				product = "Forever"
+			}
+			if product == "wow" {
+				product = "Retail"
+			}
+			opts.Log("updating %s %s → %s (old-build files are removed after)", product, r.prev.Pin.Version, opts.Pin.Version)
 		}
 	}
 
@@ -172,6 +264,15 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("local storage: %w", err)
+	}
+	if !opts.Verify {
+		if _, err := os.Stat(filepath.Join(opts.Dir, ".everlake", "adopted.json")); err == nil {
+			if err := r.st.AdoptExistingArchives(); err != nil {
+				return nil, err
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
 	for _, b := range r.st.Bad() {
 		if opts.Verify {
@@ -280,6 +381,11 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 		if err := r.prune(); err != nil { // before writeState, so the recorded fingerprints exclude pruned files
 			return nil, err
 		}
+		if _, reclaimed, err := r.st.ReclaimUnreferenced(); err != nil {
+			return nil, err
+		} else {
+			r.rep.Reclaimed += reclaimed
+		}
 		if err := r.writeState(); err != nil {
 			return nil, err
 		}
@@ -347,6 +453,15 @@ func (r *run) config(ctx context.Context, k tact.Key) (tact.Config, error) {
 	if r.Verify {
 		r.problem(p, err == nil)
 	}
+	if r.ReuseFrom != "" {
+		rel, err := filepath.Rel(r.Dir, p)
+		if err != nil {
+			return nil, err
+		}
+		if b, err := os.ReadFile(filepath.Join(r.ReuseFrom, rel)); err == nil && tact.KeyOf(b) == k {
+			return tact.ParseConfig(string(b)), r.save(p, b, 0644)
+		}
+	}
 	data, err = r.CDN.Do(ctx, cdn.Request{Kind: "config", Key: k, Max: 16 << 20, Check: func(b []byte) error {
 		if tact.KeyOf(b) != k {
 			return fmt.Errorf("config %s doesn't match its name", k)
@@ -393,6 +508,15 @@ func (r *run) indexes(ctx context.Context) ([]namedIndex, error) {
 		}
 		if r.Verify {
 			r.problem(p, err == nil)
+		}
+		if r.ReuseFrom != "" {
+			b, err := os.ReadFile(filepath.Join(r.ReuseFrom, "Data", "indices", k.String()+".index"))
+			if err == nil {
+				if idx, err := tact.ParseIndex(k, b); err == nil {
+					out[i] = namedIndex{k, idx}
+					return r.save(p, b, 0644)
+				}
+			}
 		}
 		var idx *tact.Index
 		data, err = r.CDN.Do(ctx, cdn.Request{Kind: "data", Key: k, Suffix: ".index", Max: 64 << 20,
@@ -486,6 +610,9 @@ func (r *run) store(e tact.Key, data []byte) error {
 	if r.Verify {
 		return nil
 	}
+	if err := (assets.Store{Root: r.AssetStore}).Put(e, data); err != nil {
+		return err
+	}
 	return r.st.Add(e, data)
 }
 
@@ -534,7 +661,7 @@ func (r *run) moveStaged() error {
 		if tact.VerifyBLTE(data, e) != nil {
 			return nil // damaged: fetched again like any missing file
 		}
-		if err := r.st.Add(e, data); err != nil {
+		if err := r.store(e, data); err != nil {
 			return err
 		}
 		moved++
@@ -560,6 +687,14 @@ func (r *run) moveStaged() error {
 // fetchStored gets one stored file from the CDN. check runs on each host's answer after the encoded-key check, so
 // a host with a damaged copy is skipped for the next one.
 func (r *run) fetchStored(ctx context.Context, e tact.Key, w *where, check func([]byte) error) ([]byte, error) {
+	if data, err := (assets.Store{Root: r.AssetStore}).Read(e); err == nil {
+		if check == nil || check(data) == nil {
+			return data, nil
+		}
+	}
+	if data, err := r.readReuse(e); err == nil && (check == nil || check(data) == nil) {
+		return data, nil
+	}
 	q := cdn.Request{Kind: "data", Key: e, Check: func(b []byte) error {
 		if err := tact.VerifyBLTE(b, e); err != nil {
 			return err
@@ -663,6 +798,17 @@ func (r *run) looseFiles(ctx context.Context, idx []namedIndex, inst *tact.Insta
 			r.problem(j.path, err == nil)
 			return nil
 		}
+		if r.ReuseFrom != "" {
+			rel, _ := safePath(j.e.Name)
+			data, err := os.ReadFile(filepath.Join(r.ReuseFrom, r.Pin.GameFolder, rel))
+			if err == nil && tact.KeyOf(data) == j.e.CKey {
+				if err := writeFile(j.path, data, modeFor(data)); err != nil {
+					return err
+				}
+				r.count(&r.rep.LooseKept)
+				return nil
+			}
+		}
 		var content []byte
 		_, err = r.fetchStored(ctx, j.ekey, want[j.ekey], func(b []byte) (err error) {
 			content, err = tact.Decode(b, j.ekey, j.e.CKey)
@@ -734,6 +880,11 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		e := order[i]
 		data, err := r.st.Read(e)
 		if err == nil && tact.VerifyBLTE(data, e) == nil {
+			if !r.Verify {
+				if err := (assets.Store{Root: r.AssetStore}).Put(e, data); err != nil {
+					return err
+				}
+			}
 			r.count(&r.rep.DataKept)
 			return nil
 		}
@@ -744,6 +895,20 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 			}
 			return nil
 		}
+		if data, err := (assets.Store{Root: r.AssetStore}).Read(e); err == nil {
+			if err := r.st.Add(e, data); err != nil {
+				return err
+			}
+			r.count(&r.rep.DataKept)
+			return nil
+		}
+		if data, err := r.readReuse(e); err == nil {
+			if err := r.st.Add(e, data); err != nil {
+				return err
+			}
+			r.count(&r.rep.DataKept)
+			return nil
+		}
 		mu.Lock()
 		need = append(need, e)
 		mu.Unlock()
@@ -751,6 +916,23 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 	})
 	if err != nil || r.Verify {
 		return err
+	}
+	var required uint64
+	for _, key := range need {
+		size := manifestSize[key]
+		if size > 0 {
+			required += uint64(size) + 30
+		}
+	}
+	if r.DataLimit > 0 && required > uint64(r.DataLimit) {
+		required = uint64(r.DataLimit)
+	}
+	available, err := importFreeSpace(r.Dir)
+	if err != nil {
+		return err
+	}
+	if required > available {
+		return fmt.Errorf("client data needs at least %d additional bytes; %d available; choose streaming or a larger drive", required, available)
 	}
 	// Manifest order is priority order: keep it when a limit cuts the list short.
 	pos := make(map[tact.Key]int, len(order))
@@ -826,7 +1008,7 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 			if err != nil {
 				return err
 			}
-			if err := r.st.Add(e, data); err != nil {
+			if err := r.store(e, data); err != nil {
 				return err
 			}
 			r.count(&r.rep.DataFetched)
@@ -850,7 +1032,10 @@ func (r *run) dataFiles(ctx context.Context, idx []namedIndex, dl *tact.Download
 		}
 		r.downloaded.Add(int64(len(data)))
 		for _, e := range s.files {
-			if err := r.st.Add(e, part(data, e)); err != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := r.store(e, part(data, e)); err != nil {
 				return err
 			}
 			r.count(&r.rep.DataFetched)
@@ -980,6 +1165,7 @@ func (r *run) progress() func() {
 		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
 		var last int64
+		lastKept := 0
 		for {
 			select {
 			case <-done:
@@ -988,10 +1174,15 @@ func (r *run) progress() func() {
 				now := r.downloaded.Load()
 				r.mu.Lock()
 				loose, data := r.rep.LooseFetched, r.rep.DataFetched
+				kept := r.rep.LooseKept + r.rep.DataKept
 				r.mu.Unlock()
 				r.Log("... %d MB downloaded (%.1f MB/s), %d loose files, %d data files", now>>20,
 					float64(now-last)/10/(1<<20), loose, data)
 				last = now
+				if kept != lastKept {
+					r.Log("Verified local files: %d reused without downloading", kept)
+					lastKept = kept
+				}
 			}
 		}
 	}()
@@ -1000,6 +1191,7 @@ func (r *run) progress() func() {
 
 // State is what .everlake/install.json records after a complete install, so verify can check the same selection.
 type State struct {
+	LowSpace    bool      `json:"low_space,omitempty"`
 	Pin         pin.Pin   `json:"pin"`
 	Tags        []string  `json:"tags"`
 	NoData      bool      `json:"loose_files_only,omitempty"`
@@ -1024,7 +1216,7 @@ type FileFP struct {
 var ErrNoFingerprints = errors.New("this install has no quick-check fingerprints; run a full verify")
 
 func (r *run) writeState() error {
-	s := State{Pin: r.Pin, Tags: r.Tags, NoData: r.NoData, MaxPriority: r.MaxPriority, Installed: time.Now().UTC()}
+	s := State{LowSpace: r.LowSpace, Pin: r.Pin, Tags: r.Tags, NoData: r.NoData, MaxPriority: r.MaxPriority, Installed: time.Now().UTC()}
 	if r.rep.DataSkippedByLimit > 0 {
 		s.DataLimit = r.DataLimit
 	}
@@ -1077,9 +1269,23 @@ func GameExe(dir, gameFolder string) string {
 // Start launches the installed game with the arguments Battle.net would give it (pin.StartArgs), plus extra. It
 // doesn't log in anywhere: the game shows its own login screen. It returns the new process id.
 func Start(dir string, extra ...string) (int, error) {
-	st, err := ReadState(dir)
+	unlock, err := AcquireClient(dir)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", dir, ErrNoInstall)
+		return 0, err
+	}
+	tracked := false
+	defer func() {
+		if !tracked {
+			unlock()
+		}
+	}()
+
+	st, err := LaunchState(dir)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", dir, err)
+	}
+	if err := CheckBuild(dir, st.Pin); err != nil {
+		return 0, err
 	}
 	exe := GameExe(dir, st.Pin.GameFolder)
 	if _, err := os.Stat(exe); err != nil {
@@ -1091,7 +1297,15 @@ func Start(dir string, extra ...string) (int, error) {
 		return 0, err
 	}
 	pid := cmd.Process.Pid
-	return pid, cmd.Process.Release()
+	done := make(chan struct{})
+	if err := TrackClient(dir, pid, done, unlock); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return 0, err
+	}
+	tracked = true
+	go func() { cmd.Wait(); close(done) }()
+	return pid, nil
 }
 
 // QuickVerify checks the fingerprinted client files by size and modification time only, without reading or hashing

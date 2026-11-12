@@ -1,0 +1,45 @@
+name: release-macos
+on:
+  push:
+    branches: [main]
+    paths: [release/macos-version.txt]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-macos
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Package and verify macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(cat release/macos-version.txt)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]
+          scripts/package.sh macos "$tag" dist
+          scripts/package.sh sums - dist
+          ditto -x -k dist/Everlake-Launcher-macos.zip verified
+          app="verified/Everlake Launcher.app"
+          codesign --verify --strict "$app"
+          lipo -info "$app/Contents/MacOS/everlake-launcher" | grep -q 'x86_64 arm64'
+          lipo -info "$app/Contents/Resources/keypatch.dylib" | grep -q 'x86_64 arm64'
+          test "$("$app/Contents/MacOS/everlake-launcher" version)" = "$tag"
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+      - name: Publish complete macOS release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(cat release/macos-version.txt)
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --title "Everlake Launcher $tag — macOS" --notes-file release/macos-notes.txt dist/Everlake-Launcher-macos.zip dist/Everlake-Launcher-macos.dmg dist/SHA256SUMS.txt
+          gh release edit "$tag" --draft=false --latest

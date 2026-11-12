@@ -511,9 +511,29 @@ func (s *Storage) Prune(keep map[tact.Key]bool) (entries, archives int, reclaime
 			}
 		}
 	}
-	if entries == 0 {
-		return 0, 0, 0, nil
+	// Persist the new index before deleting archives it used to reference.
+	if err := s.flush(); err != nil {
+		return entries, 0, 0, err
 	}
+	archives, reclaimed, err = s.reclaimUnreferenced()
+	return entries, archives, reclaimed, err
+}
+
+// ReclaimUnreferenced removes only launcher-owned archives with no live index
+// references. Mixed archives retain good objects; no client-owned files are removed.
+func (s *Storage) ReclaimUnreferenced() (int, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readOnly {
+		return 0, 0, errors.New("local storage is open read-only")
+	}
+	if err := s.flush(); err != nil {
+		return 0, 0, err
+	}
+	return s.reclaimUnreferenced()
+}
+
+func (s *Storage) reclaimUnreferenced() (archives int, reclaimed int64, err error) {
 	used := map[int]bool{}
 	for _, bf := range s.buckets {
 		for _, loc := range bf.entries {
@@ -534,16 +554,16 @@ func (s *Storage) Prune(keep map[tact.Key]bool) (entries, archives int, reclaime
 			reclaimed += fi.Size()
 		}
 		if e := os.Remove(s.archivePath(n)); e != nil && !os.IsNotExist(e) {
-			return entries, archives, reclaimed, e
+			return archives, reclaimed, e
 		}
 		delete(s.archives, n)
 		archives++
 	}
 	s.own = keepOwn
 	if e := s.writeOwn(); e != nil {
-		return entries, archives, reclaimed, e
+		return archives, reclaimed, e
 	}
-	return entries, archives, reclaimed, s.flush()
+	return archives, reclaimed, nil
 }
 
 // Close flushes and closes every file.
@@ -787,4 +807,24 @@ func WriteFile(p string, data []byte, mode os.FileMode) error {
 		os.Remove(tmp.Name())
 	}
 	return err
+}
+
+// AdoptExistingArchives transfers archive cleanup responsibility after explicit
+// single-product in-place adoption. It never changes or copies archive contents.
+func (s *Storage) AdoptExistingArchives() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readOnly {
+		return errors.New("local storage is open read-only")
+	}
+	known := map[int]bool{}
+	for _, n := range s.own {
+		known[n] = true
+	}
+	for n := range s.archives {
+		if !known[n] {
+			s.own = append(s.own, n)
+		}
+	}
+	return s.writeOwn()
 }

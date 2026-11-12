@@ -1,6 +1,5 @@
 // Package secret encrypts small secrets (a remembered password) so only this user on this computer can read them
-// back: DPAPI on Windows, where the launcher signs in to realms. Elsewhere there's nothing to keep them with and
-// Available is false.
+// back: DPAPI on Windows and Keychain references on native macOS builds.
 package secret
 
 import "errors"
@@ -20,3 +19,6 @@ func Seal(plain []byte) ([]byte, error) { return seal(plain) }
 
 // Open decrypts what Seal made.
 func Open(sealed []byte) ([]byte, error) { return open(sealed) }
+
+// Forget removes a platform credential referenced by sealed.
+func Forget(sealed []byte) error { return forget(sealed) }

@@ -9,7 +9,7 @@
 //	everlake-launcher show    [--tags ...]          the pinned build: tags and sizes, nothing written
 //	everlake-launcher pin     [--product wowf]      prints a pin for the build that is live now (to review, not to follow)
 //	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
-//	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows)
+//	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows/macOS)
 //	everlake-launcher ui      [--dir <folder>] [--browser]   the launcher's window (or the same page in the browser);
 //	                                                         --dir starts it on that folder instead of the saved one
 //	everlake-launcher mirror  --store <folder> [--prefetch]   Everlake's own CDN (runs on the server)
@@ -74,6 +74,8 @@ func main() {
 	stdin = bufio.NewReader(os.Stdin)
 	var err error
 	switch os.Args[1] {
+	case "clients":
+		err = cmdClients(ctx, os.Args[2:])
 	case "install":
 		err = cmdInstall(ctx, os.Args[2:], false)
 	case "verify":
@@ -116,6 +118,9 @@ func usage() {
   everlake-launcher mirror  --store <folder> [--overlay <folder>] [--addr :8087] [--prefetch | --prefetch-only]
                             [--tags OSX,Windows,x86_64,arm64,enUS,US] [--rate-mb 40] [--quiet]
   everlake-launcher update  [--check]
+  everlake-launcher clients discover [ROOT ...]
+  everlake-launcher clients import --source ROOT --dir NEW_ROOT [--retail-pin FILE]
+  everlake-launcher clients install|verify|start --dir ROOT [--retail-pin FILE]
 `)
 	os.Exit(2)
 }
@@ -172,7 +177,7 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	p := pin.Default()
 	opts := install.Options{
-		Dir: *dir, Pin: p, Tags: splitTags(*tags), Jobs: *jobs, Verify: verify, NoData: *noData,
+		Dir: *dir, AssetStore: sharedAssetRoot(*dir), Pin: p, Tags: splitTags(*tags), Jobs: *jobs, Verify: verify, NoData: *noData,
 		DataLimit: *limitMB << 20, Log: logf,
 	}
 	if set["max-priority"] {
@@ -184,11 +189,11 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", *dir, install.ErrNoInstall)
 		}
-		if st.Pin.BuildConfig != p.BuildConfig {
-			logf("note: %s holds %s, this launcher pins %s; checking against %s", *dir, st.Pin.Version, p.Version,
-				p.Version)
+		if err := st.Pin.Check(); err != nil {
+			return err
 		}
-		if !set["tags"] {
+		p, opts.Pin = st.Pin, st.Pin
+		if !set["tags"] && len(st.Tags) > 0 {
 			opts.Tags = st.Tags
 		}
 		if !set["no-data"] {
@@ -202,7 +207,7 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 	// The game streams from Blizzard's hosts; a --cdn mirror is only tried first during the install.
 	opts.GameHosts = p.Hosts(ctx, nil)
 	opts.CDN = cdn.New(append(splitTags(*hosts), opts.GameHosts...), p.CDNPath)
-	logf("%s WoW Forever %s into %s (tags %s) from %s", name, p.Version, *dir, strings.Join(opts.Tags, " "),
+	logf("%s %s %s into %s (tags %s) from %s", name, p.Product, p.Version, *dir, strings.Join(opts.Tags, " "),
 		strings.Join(opts.CDN.Hosts, ", "))
 	start := time.Now()
 	rep, err := install.Run(ctx, opts)
@@ -265,8 +270,12 @@ func quickVerify(dir string) error {
 func cmdShow(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	tags := fs.String("tags", defaultTags(), "tags to total up")
+	retail := fs.Bool("retail", false, "show the pinned Retail build")
 	fs.Parse(args)
 	p := pin.Default()
+	if *retail {
+		p = pin.Retail()
+	}
 	c := cdn.New(p.Hosts(ctx, nil), p.CDNPath)
 	buildKey, _ := p.Keys()
 	raw, err := c.Get(ctx, "config", buildKey, "")
@@ -429,6 +438,9 @@ func installOptions(ctx context.Context, dir string, verify bool) install.Option
 
 // runInstall runs an install or verify and reports the outcome through log.
 func runInstall(ctx context.Context, opts install.Options, log func(string)) error {
+	if opts.AssetStore == "" {
+		opts.AssetStore = sharedAssetRoot(opts.Dir)
+	}
 	opts.Log = func(f string, a ...any) { log(fmt.Sprintf(f, a...)) }
 	start := time.Now()
 	rep, err := install.Run(ctx, opts)
@@ -536,12 +548,16 @@ func cmdUI(ctx context.Context, args []string) error {
 // terminal (detached), it ends a while after the last page closes.
 func runUI(ctx context.Context, dir, addr string, show uiShow, detached bool) error {
 	srv := webui.New(dir, pin.Default().Version, webui.Actions{
-		EraMaps: eramaps.Download,
+		EraMaps:      eramaps.Download,
+		RetailStatus: retailStatus,
+		RetailPlay:   retailPlay,
+		Client:       clientAction,
+		Retail:       retailAction,
 		Install: func(ctx context.Context, dir string, log func(string)) error {
-			return runInstall(ctx, installOptions(ctx, dir, false), log)
+			return installSharedClient(ctx, dir, false, log)
 		},
 		Verify: func(ctx context.Context, dir string, log func(string)) error {
-			return runInstall(ctx, installOptions(ctx, dir, true), log)
+			return installSharedClient(ctx, dir, true, log)
 		},
 		Play:       uiPlay(),
 		Realm:      uiRealm(),
@@ -655,4 +671,15 @@ func openBrowser(url string) {
 		args = []string{url}
 	}
 	_ = exec.Command(name, args...).Start()
+}
+
+func sharedAssetRoot(dir string) string {
+	if root := os.Getenv("EVERLAKE_ASSET_STORE"); root != "" {
+		return root
+	}
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(absolute), ".everlake-assets")
 }

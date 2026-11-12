@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// ErrUnsupported: the in-memory patches are written for Windows only. On macOS the game is hardened and is patched
-// from inside instead (wow-project-everlake's client/macos/everlake-client.sh).
-var ErrUnsupported = errors.New("joining a realm from the launcher works on Windows only for now; on macOS use " +
-	"wow-project-everlake's client/macos/everlake-client.sh")
+// ErrUnsupported reports platforms without a supported game launch helper.
+var ErrUnsupported = errors.New("joining a realm from the launcher requires Windows or macOS")
 
 // Options say how to start the game and what to patch.
 type Options struct {

@@ -24,8 +24,8 @@
 /* A school of magic: field colour, then four cel steps from the dark rim to the white core, and the bloom. */
 [data-school="fel"]    { --bg: #0e1024; --c0: #24135e; --c1: #4b3cf0; --c2: #8f9bff; --c3: #eef0ff; --bloom: rgba(90, 80, 255, .38); }
 [data-school="fire"]   { --bg: #130d17; --c0: #6e1408; --c1: #f0531c; --c2: #ffb53b; --c3: #fff4d6; --bloom: rgba(255, 110, 40, .32); }
-[data-school="holy"]   { --bg: #43303a; --c0: #8b4a0e; --c1: #f29b2e; --c2: #ffd970; --c3: #fffbe9; --bloom: rgba(255, 190, 90, .36); }
-[data-school="nature"] { --bg: #3a2732; --c0: #165a2c; --c1: #3fbf5c; --c2: #a9f08a; --c3: #f3ffe4; --bloom: rgba(110, 230, 120, .3); }
+[data-school="holy"]   { --bg: #17121a; --c0: #8b4a0e; --c1: #f29b2e; --c2: #ffd970; --c3: #fffbe9; --bloom: rgba(255, 190, 90, .36); }
+[data-school="nature"] { --bg: #101a18; --c0: #165a2c; --c1: #3fbf5c; --c2: #a9f08a; --c3: #f3ffe4; --bloom: rgba(110, 230, 120, .3); }
 [data-school="frost"]  { --bg: #0b1526; --c0: #0f3a78; --c1: #2f8cf2; --c2: #9fdcff; --c3: #f1fbff; --bloom: rgba(80, 170, 255, .34); }
 
 * { box-sizing: border-box; }
@@ -49,9 +49,10 @@ input, .log, .path { user-select: text; -webkit-user-select: text; }
 
 .spell {
   position: fixed;
-  right: -10vw;
+  right: -25%;
   top: 50%;
-  width: min(104vh, 68vw);
+  width: max(700px, 125vw);
+  opacity: .24;
   aspect-ratio: 1;
   transform: translateY(-50%);
   pointer-events: none;
@@ -80,8 +81,10 @@ body.cold .spell::before { opacity: .45; }
   position: relative;
   z-index: 1;
   min-height: 100%;
-  width: min(100%, 470px);
-  padding: 40px 44px 22px;
+  width: min(100%, 560px);
+  margin: 0 auto;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bg), transparent 10%), color-mix(in srgb, var(--bg), transparent 25%));
+  padding: 32px 30px 22px;
   display: flex;
   flex-direction: column;
 }
@@ -332,15 +335,50 @@ button:disabled { cursor: default; }
 }
 /* Animation off (the footer's switch, or the system's "reduce motion" until it's used): nothing on the page moves. */
 body.still *, body.still *::before, body.still *::after { animation: none !important; transition: none !important; }
+
+/* Compact composition: full-colour artwork behind the masthead, quiet controls below. */
+.panel { width: min(100%, 540px); padding: 32px 28px 20px; background: none; }
+.hero { position: relative; isolation: isolate; min-height: 202px; margin: -32px -28px 0; padding: 42px 28px 24px; overflow: hidden; border-bottom: 1px solid var(--faint); background: var(--ink); }
+.hero .spell { position: absolute; right: -200px; top: -174px; width: 660px; transform: none; opacity: 1; z-index: -2; }
+.hero::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(90deg, rgba(10,9,18,.85), rgba(10,9,18,.15) 62%, transparent); }
+.hero h1 { font-size: clamp(54px, 13vw, 72px); letter-spacing: -.025em; text-shadow: 0 2px 0 var(--ink); }
+.hero .version { color: rgba(255,255,255,.82); font-size: 11px; letter-spacing: .015em; }
+.hero .tag { font-size: 10px; padding: 2px 10px; }
+.hero h1::after { width: 52px; height: 5px; margin-top: 12px; border: 0; }
+.status { margin-top: 22px; }
+.status-text { font-size: 23px; }
+.realm { margin-top: 22px; }
+input, select, textarea { background: rgba(0,0,0,.32); border: 1px solid rgba(255,255,255,.18); border-radius: 5px; color: var(--text); padding: 10px 12px; width: 100%; font: inherit; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--c2); outline-offset: 1px; }
+.check input { padding: 0; }
+.check .hint { margin-left: auto; font-size: 11px; }
+.actions { margin-top: 22px; gap: 8px; }
+.play { border: 1px solid var(--c2); border-radius: 5px; font-size: 30px; padding: 14px; }
+.ghost { border-width: 1px; border-radius: 5px; padding: 8px 11px; font-size: 12px; }
+#playClassic { margin: 12px 0 14px; color: var(--muted); background: transparent; }
+.tools { border-top: 1px solid var(--faint); }
+.tools summary { padding: 13px 0; font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; }
+.tools summary::-webkit-details-marker { display: none; }
+.tools summary::before { content: "+"; color: var(--c2); margin-right: 9px; font-family: var(--mono); }
+.tools[open] > summary::before { content: "−"; }
+.tools > :not(summary) { margin-bottom: 12px; }
+.tools .ghost { margin-right: 3px; }
+.summary-note { float: right; color: var(--muted); font-size: 11px; font-weight: 400; }
+.foot { flex-wrap: wrap; gap: 10px; padding-top: 20px; font-size: 11px; }
+.foot .path { flex-basis: calc(100% - 70px); }
+.foot .schools { margin-right: auto; }
+@media (max-width: 380px) { .panel { padding-left: 18px; padding-right: 18px; } .hero { margin-left: -18px; margin-right: -18px; padding-left: 18px; } .pair { grid-template-columns: 1fr; } .summary-note { display: none; } }
+
 </style>
 </head>
 <body data-school="fire">
-<div class="spell" aria-hidden="true"></div>
-
 <main class="panel">
+  <header class="hero">
+  <div class="spell" aria-hidden="true"></div>
   <div class="tag"><span>WoW Forever</span></div>
   <h1>Everlake</h1>
   <p class="version" id="version">&nbsp;</p>
+  </header>
   <p class="hint notice" id="notice" hidden></p>
 
   <section class="status" id="status" aria-live="polite">
@@ -382,12 +420,11 @@ body.still *, body.still *::before, body.still *::after { animation: none !impor
       <label>Email<input id="email" type="email" autocomplete="username" spellcheck="false"></label>
       <label>Password<input id="password" type="password" autocomplete="current-password"></label>
     </div>
-    <label class="check" id="rememberRow" hidden><input id="remember" type="checkbox">Remember password
-      <span class="hint">(encrypted for this Windows user)</span></label>
+    <label class="check" id="rememberRow" hidden><input id="remember" type="checkbox">Remember me
+      <span class="hint">Saved securely</span></label>
     <p class="hint" id="realmNote">Leave the login server empty to start the game without joining a realm.</p>
   </section>
-  <p class="hint" id="macNote" hidden>On macOS, Play starts the game on its own; joining a realm from the launcher
-    works on Windows for now.</p>
+  <p class="hint" id="macNote" hidden>Joining a realm requires the client patch helper on this platform.</p>
 
   <div class="actions">
     <button class="play" id="play" type="button" disabled>Play</button>
@@ -397,10 +434,36 @@ body.still *, body.still *::before, body.still *::after { animation: none !impor
     </div>
   </div>
 
-  <label class="check"><input id="eraContent" type="checkbox">Era content</label>
-  <button class="ghost" id="eraMaps" type="button" hidden>Download Era maps</button>
-  <button class="ghost" id="playClassic" type="button" hidden>Play Classic</button>
+  <button class="ghost" id="playClassic" type="button" hidden>Play Classic–Wrath prototype</button>
+  <details class="tools retail-tools">
+    <summary>Retail <span class="summary-note">Client &amp; downloads</span></summary>
+    <p class="hint" id="retailNote">Retail requires a separate compatible build and storage for downloaded assets.</p>
+    <button class="ghost" id="retailPlay" type="button" hidden>Play Retail</button>
+    <button class="ghost" id="retailStream" type="button" hidden>Install Retail for streaming</button>
+    <button class="ghost" id="retailInstall" type="button" hidden>Download full Retail client</button>
+    <button class="ghost" id="retailVerify" type="button" hidden>Verify Retail</button>
+  </details>
 
+  <details class="tools">
+    <summary>Use an existing installation</summary>
+    <p class="hint">Close the game and Battle.net first. Import creates a verified copy and keeps your original for recovery. Rerun the same import to resume an interrupted copy.</p>
+    <label>Experience<select id="importProduct"><option value="wowf">Forever</option><option value="wow">Retail</option></select></label>
+    <label>Existing client folder<input id="importSource" spellcheck="false"></label>
+    <label>New destination folder<input id="importDestination" spellcheck="false"></label>
+    <button class="ghost" id="inspectClient" type="button">Inspect files and storage</button>
+    <button class="ghost" id="adoptClient" type="button">Update existing installation in place</button>
+    <p class="hint">Low disk space: updates the existing folder without a second client or duplicate asset cache. Keeps addons and settings; replaces the old build. Only single-product installations are supported. Temporary space for changed files is still required.</p>
+    <button class="ghost" id="reuseClient" type="button">Install using existing files</button>
+    <p class="hint">Use an older install to reduce downloads. Matching files are verified and copied; only missing or damaged files download. Keep Battle.net and the game closed. Use a separate destination with space for the new client. Repeat with the same folders to resume.</p>
+    <button class="ghost" id="importClient" type="button">Import / resume</button>
+    <p class="hint">After importing Forever, use Change to select the new folder.</p>
+  </details>
+  <details class="tools">
+    <summary>Advanced build settings</summary>
+    <p class="hint">The default Retail build follows the recorded TrinityCore version. An administrator can supply an override here.</p>
+    <label>Build configuration JSON<textarea id="retailPinJSON" rows="5" spellcheck="false"></textarea></label>
+    <button class="ghost" id="configureRetail" type="button">Save Retail build</button>
+  </details>
   <footer class="foot">
     <span class="path" id="path"></span>
     <button class="linkish" id="pathEdit" type="button" title="Change the install folder">Change</button>
@@ -641,11 +704,12 @@ function render() {
   play.dataset.job = !installed ? "install" : broken ? "install" : "play";
   play.textContent = busy ? (VERB[busy] || "Working") + "…" : !installed ? "Install" : broken ? "Repair" : "Play";
   play.disabled = !s || !!busy;
-  $("eraContent").disabled = !s || !!busy;
-  $("eraMaps").hidden = !$("eraContent").checked;
-  $("eraMaps").disabled = !s || !!busy;
-  $("playClassic").hidden = !$("eraContent").checked || !s?.realm.supported;
+  $("playClassic").hidden = !s?.classic_installed || !s?.realm.supported;
   $("playClassic").disabled = !s || !!busy;
+  if (s?.retail_note) $("retailNote").textContent = s.retail_note;
+  $("retailStream").hidden = $("retailInstall").hidden = !s?.retail_version;
+  $("retailPlay").hidden = $("retailVerify").hidden = !s?.retail_ready;
+  for (const id of ["retailStream", "retailInstall", "retailPlay", "retailVerify", "inspectClient", "importClient", "reuseClient", "adoptClient", "configureRetail"]) $(id).disabled = !!busy;
   $("install").disabled = !s || !!busy;
   $("verify").disabled = !s || !!busy || !installed;
   $("verify").parentElement.hidden = !installed; // nothing to update or verify before the first install
@@ -710,7 +774,10 @@ function render() {
   }
 }
 
+let refreshing = false;
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   try {
     const s = await (await fetch("status")).json();
     state = s;
@@ -742,10 +809,10 @@ async function refresh() {
     }
     if (s.realm) showSaved(s.realm);
     // The sign-in shows once there's a client to sign in with.
-    $("realm").hidden = !(realmSupported && s.installed);
+    $("realm").hidden = !(realmSupported && (s.installed || s.retail_ready));
     $("macNote").hidden = !(realmSupported === false && s.installed);
     render();
-  } catch (e) { /* the launcher stopped */ }
+  } catch (e) { /* the launcher stopped */ } finally { refreshing = false; }
 }
 
 // A saved login server shows as one line; Change opens the field.
@@ -823,10 +890,16 @@ $("folderInput").addEventListener("keydown", e => {
 async function run(name, classic = false) {
   if (busy) return;
   const opts = { method: "POST" };
-  if (name === "play") {
+  if (name === "play" || name === "retail-play") {
     opts.headers = { "Content-Type": "application/json" };
     opts.body = JSON.stringify({ login_host: $("loginHost").value.trim(), email: $("email").value.trim(),
                                  password: $("password").value, remember: $("remember").checked, classic });
+  }
+  if (name.startsWith("client-")) {
+    opts.headers = {"Content-Type":"application/json"};
+    opts.body = JSON.stringify({source:$("importSource").value.trim(), destination:$("importDestination").value.trim(),
+      product:$("importProduct").value, pin_json:$("retailPinJSON").value});
+    openLog(true);
   }
   clearLog();
   resetProgress();
@@ -835,7 +908,7 @@ async function run(name, classic = false) {
   if (folderEditing) editFolder(false);
   const res = await fetch("run?name=" + name, opts);
   if (!res.ok) { addLine("error: " + (await res.text()).trim()); openLog(true); return; }
-  if (name === "play") $("password").value = ""; // not kept in the page once it's been taken
+  if (name === "play" || name === "retail-play") $("password").value = ""; // not kept in the page once it's been taken
   busy = name;
   spell.work();
   render();
@@ -844,9 +917,16 @@ async function run(name, classic = false) {
 $("play").onclick = () => run($("play").dataset.job || "play");
 $("install").onclick = () => run("install");
 $("verify").onclick = () => run("verify");
-$("eraContent").onchange = render;
 $("playClassic").onclick = () => run("play", true);
-$("eraMaps").onclick = () => { if ($("eraContent").checked) run("era-maps"); };
+$("inspectClient").onclick = () => run("client-inspect");
+$("adoptClient").onclick = () => run("client-adopt");
+$("reuseClient").onclick = () => run("client-reuse");
+$("importClient").onclick = () => run("client-import");
+$("configureRetail").onclick = () => run("client-configure");
+$("retailPlay").onclick = () => run("retail-play");
+$("retailStream").onclick = () => run("retail-stream");
+$("retailInstall").onclick = () => run("retail-install");
+$("retailVerify").onclick = () => run("retail-verify");
 $("password").addEventListener("keydown", e => { if (e.key === "Enter" && !$("play").disabled) $("play").click(); });
 
 // ------------------------------------------------------------------ log

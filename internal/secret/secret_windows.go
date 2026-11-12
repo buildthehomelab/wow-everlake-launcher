@@ -60,3 +60,5 @@ func open(sealed []byte) ([]byte, error) {
 	}
 	return out.take(), nil
 }
+
+func forget([]byte) error { return nil }

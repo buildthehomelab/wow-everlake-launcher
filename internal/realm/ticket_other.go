@@ -1,11 +1,10 @@
-//go:build !windows
+//go:build !windows && (!darwin || !cgo)
 
 package realm
 
 import "errors"
 
-// WriteLaunchOptions is Windows-only: on macOS the login goes into the net.battle preferences instead
-// (wow-project-everlake's client/macos/login.py).
+// WriteLaunchOptions needs a supported native platform build.
 func WriteLaunchOptions(portal string, l *Login) error {
-	return errors.New("storing the login for the game is written for Windows only")
+	return errors.New("account handoff requires Windows or a native macOS launcher build")
 }

@@ -64,7 +64,7 @@ func TestWindowLoadsPage(t *testing.T) {
 	}
 }
 
-func TestWindowEraCheckbox(t *testing.T) {
+func TestWindowExistingClientControls(t *testing.T) {
 	if os.Getenv("EVERLAKE_WINDOW_TEST") != "1" {
 		t.Skip("set EVERLAKE_WINDOW_TEST=1 to open a real window")
 	}
@@ -79,7 +79,11 @@ func TestWindowEraCheckbox(t *testing.T) {
 	}
 	install := t.TempDir()
 	ui := webui.New(install, "test", webui.Actions{
-		EraMaps: func(_ context.Context, dir string, _ func(string)) error {
+		Client: func(_ context.Context, dir, action string, in webui.PlayInput, _ func(string)) error {
+			if action != "client-adopt" || in.Source != `C:\Existing Client` || in.Product != "wow" {
+				finish("incorrect client action payload")
+				return nil
+			}
 			finish(dir)
 			return nil
 		},
@@ -93,23 +97,21 @@ func TestWindowEraCheckbox(t *testing.T) {
 		if r.URL.Path == "/" {
 			_, _ = w.Write([]byte(`<script>
 const eraTest = setInterval(() => {
-  const box = document.getElementById("eraContent");
-  const button = document.getElementById("eraMaps");
-  if (box.disabled) return;
+  const button = document.getElementById("adoptClient");
+  if (button.disabled) return;
   clearInterval(eraTest);
-  const fail = reason => fetch("/era-test-failed?reason=" + encodeURIComponent(reason));
-  if (box.checked || !button.hidden) return fail("Era content was enabled by default");
-  box.click();
-  if (button.hidden || button.disabled) return fail("checkbox did not enable the download");
+  document.getElementById("importSource").value = "C:\\Existing Client";
+  document.getElementById("importProduct").value = "wow";
+  button.closest("details").open = true;
   button.click();
 }, 100);
 </script>`))
 		}
 	}))
 	defer ts.Close()
-	timer := time.AfterFunc(45*time.Second, func() { finish("Era map action timed out") })
+	timer := time.AfterFunc(45*time.Second, func() { finish("Existing client action timed out") })
 	defer timer.Stop()
-	if err := Run(Options{Title: "Everlake Era checkbox test", URL: ts.URL + "/", Width: 600, Height: 600,
+	if err := Run(Options{Title: "Everlake existing client test", URL: ts.URL + "/", Width: 600, Height: 600,
 		DataDir: t.TempDir(), Stop: stop}); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +121,6 @@ const eraTest = setInterval(() => {
 			t.Fatal(got)
 		}
 	default:
-		t.Fatal("window closed before the Era map action ran")
+		t.Fatal("window closed before the Existing client action ran")
 	}
 }

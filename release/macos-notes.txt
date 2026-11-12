@@ -1,0 +1,7 @@
+macOS update: account login through character selection, Keychain-backed Remember me, a narrower launcher with artwork behind the controls, and game screen narration disabled for launcher sessions.
+
+Existing clients can supply hash-verified assets to reduce downloads. Single-product installations can also be updated in place without a second client or duplicate asset cache. Interrupted imports and updates resume; damaged assets are replaced and unreferenced launcher-owned archives are reclaimed. Addons and SavedVariables remain client-specific.
+
+Includes the pinned Retail 12.1.5.70783 client, streaming/full install controls, shared verified assets, and the packaged Everlake companion addon. The macOS login helper is included for Apple silicon and Intel; Xcode tools are not required by the release app.
+
+This release contains macOS assets only. Existing Windows launchers remain on their current release while Windows game testing is pending. Retail realm joining is not validated because that server is not yet available. The Mac app uses an ad-hoc signature, as earlier releases did; it is not notarized.
