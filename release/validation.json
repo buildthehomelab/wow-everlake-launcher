@@ -1,6 +1,6 @@
 {
   "platform": "macOS arm64",
-  "status": "validation in progress; not yet released",
+  "status": "Mac release validation passed; publication handled by release workflow",
   "passed": [
     "User confirmed packaged Forever account login reaches character selection",
     "Retail login and realm list; realm compatibility intentionally deferred",
@@ -16,14 +16,15 @@
     "APFS independent archive clones: 1086717952 bytes reclaimed in isolated real-archive test",
     "Corrupt cache object and archive repair; unused owned archive reclamation; mixed good archives preserved",
     "Go race suite, vet, Windows/Linux/macOS no-cgo cross-builds",
-    "Universal macOS app and helper packaging; ad-hoc signature verification"
+    "Universal macOS app and helper packaging; ad-hoc signature verification",
+    "Full Retail APFS download and deep verification: 143 loose files and 1578530 data objects intact, zero verification downloads",
+    "Final native macOS saved-login restart reached character selection and entered Forever world",
+    "Packaged Everlake addon /everlake command displayed wowf client 1.60.1.70790; SavedVariables persisted after clean exit",
+    "Narration and narration-dialog settings remained disabled after live game session",
+    "Native microphone privacy crash corrected in launcher Info.plist; subsequent world entry and clean exit without new crash",
+    "GitHub CI passed on Windows, Linux and macOS (run 43265349581), including Windows WebView2 tests"
   ],
-  "pending": [
-    "Full Retail download and full verification on APFS",
-    "Final packaged UI, saved-login restart and narration checks",
-    "Live addon loading",
-    "CI and macOS publication"
-  ],
+  "pending": [],
   "excluded": [
     "Retail realm joining: server will come later",
     "Windows game runtime: machine available later"
