@@ -1,0 +1,50 @@
+name: release-windows-test
+on:
+  push:
+    branches: [main]
+    paths: [release/windows-test-version.txt]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-windows-test
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Native window tests
+        env:
+          EVERLAKE_WINDOW_TEST: '1'
+        run: go test -v -run TestWindow ./internal/appwindow
+      - name: Package and verify Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(tr -d '\r\n' < release/windows-test-version.txt)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+-windows-test\.[0-9]+$ ]]
+          scripts/package.sh windows "$tag" dist
+          (cd dist && sha256sum *.exe > SHA256SUMS.txt)
+          test "$(dist/everlake-launcher-cli-windows-amd64.exe version)" = "$tag"
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+      - name: Verify packaged window executable
+        shell: pwsh
+        run: |
+          $tag = (Get-Content release/windows-test-version.txt -Raw).Trim()
+          $p = Start-Process ./dist/everlake-launcher-windows-amd64.exe -ArgumentList version -Wait -PassThru -RedirectStandardOutput version.txt -RedirectStandardError error.txt
+          if ($p.ExitCode -ne 0 -or (Get-Content version.txt -Raw).Trim() -ne $tag) { throw 'Packaged Windows launcher failed version smoke test' }
+      - name: Publish opt-in Windows test release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(tr -d '\r\n' < release/windows-test-version.txt)
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "Windows in-place update test — $tag" --notes-file release/windows-test-notes.txt dist/*.exe dist/SHA256SUMS.txt
+          gh release edit "$tag" --draft=false --prerelease --latest=false

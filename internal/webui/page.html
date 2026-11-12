@@ -446,10 +446,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--c2); outlin
 
   <details class="tools">
     <summary>Use an existing installation</summary>
-    <p class="hint">Close the game and Battle.net first. Import creates a verified copy and keeps your original for recovery. Rerun the same import to resume an interrupted copy.</p>
+    <p class="hint">Close the game and Battle.net first. To save disk space, select your existing folder and choose Update existing installation in place. No destination folder is needed.</p>
     <label>Experience<select id="importProduct"><option value="wowf">Forever</option><option value="wow">Retail</option></select></label>
     <label>Existing client folder<input id="importSource" spellcheck="false"></label>
-    <label>New destination folder<input id="importDestination" spellcheck="false"></label>
+    <label>New destination folder (copy/import only)<input id="importDestination" spellcheck="false"></label>
     <button class="ghost" id="inspectClient" type="button">Inspect files and storage</button>
     <button class="ghost" id="adoptClient" type="button">Update existing installation in place</button>
     <p class="hint">Low disk space: updates the existing folder without a second client or duplicate asset cache. Keeps addons and settings; replaces the old build. Only single-product installations are supported. Temporary space for changed files is still required.</p>
