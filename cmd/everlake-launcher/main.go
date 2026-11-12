@@ -9,7 +9,7 @@
 //	everlake-launcher show    [--tags ...]          the pinned build: tags and sizes, nothing written
 //	everlake-launcher pin     [--product wowf]      prints a pin for the build that is live now (to review, not to follow)
 //	everlake-launcher start   --dir <folder> [-- game arguments]   starts the installed game with the arguments it needs
-//	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows)
+//	everlake-launcher play    --dir <folder> [--login-host <name>] [--email <address>]   signs in and joins a realm (Windows/macOS)
 //	everlake-launcher ui      [--dir <folder>] [--browser]   the launcher's window (or the same page in the browser);
 //	                                                         --dir starts it on that folder instead of the saved one
 //	everlake-launcher mirror  --store <folder> [--prefetch]   Everlake's own CDN (runs on the server)

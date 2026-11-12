@@ -186,7 +186,7 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 func uiPlay() func(ctx context.Context, dir string, in webui.PlayInput, log func(string)) error {
 	return func(ctx context.Context, dir string, in webui.PlayInput, log func(string)) error {
 		if in.Classic && ((runtime.GOOS != "windows" && runtime.GOOS != "darwin") || strings.TrimSpace(in.LoginHost) == "") {
-			return fmt.Errorf("Classic requires Windows and a login server")
+			return fmt.Errorf("Classic requires Windows or macOS and a login server")
 		}
 		if strings.TrimSpace(in.LoginHost) == "" || (runtime.GOOS != "windows" && runtime.GOOS != "darwin") {
 			pid, err := install.Start(dir)

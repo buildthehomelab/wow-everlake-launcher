@@ -170,7 +170,7 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
 
 ## Joining a realm
 
-`play` (Windows) does what Battle.net does for Blizzard's realms, against a TrinityCore login server:
+`play` supports Windows and macOS. The Windows launch flow does what Battle.net does for Blizzard's realms, against a TrinityCore login server:
 
 1. Signs in with your email and password (asked for; or `EVERLAKE_PASSWORD`; or the remembered one) over HTTPS on
    port 8081, and gets a
@@ -196,13 +196,15 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
      is fine; it keeps running in the background).
 
 The login server, email, key and CA are saved in `.everlake/realm.json` in the install folder; the password isn't.
-**Remember password** (or `play --remember`) keeps it after a sign-in succeeds, encrypted with DPAPI for your Windows
-user, in the launcher's own `launcher.json` (never in the install folder, never sent back to the page). With the
+**Remember me** (or `play --remember`) keeps it after a sign-in succeeds. Windows encrypts it with DPAPI for your
+user in the launcher's own `launcher.json`; macOS stores it in Keychain and keeps only an opaque reference in that
+file. It is never stored in the install folder or sent back to the page. With the
 password field left empty, Play uses it; unticking the box forgets it on the next Play, and a password the login
 server refuses is forgotten.
 The key table follows jibay442/forever_docker and Karrz1/Karrz-playerbots-wow-forever's Windows launcher; the
-login-name patch follows Arctium's launcher. On macOS, `wow-project-everlake`'s `client/macos/keypatch.c` patches
-from inside the game.
+login-name patch follows Arctium's launcher. On macOS, the launcher writes the login ticket to Battle.net preferences
+and launches a private app copy using its bundled helper, derived from `wow-project-everlake`'s
+`client/macos/keypatch.c`. The original game app is preserved.
 
 ## The mirror (our own CDN)
 
