@@ -755,7 +755,9 @@ function render() {
   } else if (s.quick.checked && s.quick.ok) {
     status.classList.add("ok");
     $("statusText").textContent = "Ready to play";
-    $("statusNote").textContent = "Client files intact. Verify files does a full hash check.";
+    $("statusNote").textContent = s.installed_version
+      ? "You have build " + s.installed_version + ". Update moves the game to " + s.version + "; only changed files are downloaded."
+      : "Client files intact. Verify files does a full hash check.";
   } else if (s.quick.checked) {
     status.classList.add("bad");
     const parts = [];

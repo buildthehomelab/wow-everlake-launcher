@@ -233,15 +233,17 @@ func (s *Server) look(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusResp struct {
-	RetailVersion    string      `json:"retail_version"`
-	RetailNote       string      `json:"retail_note"`
-	RetailReady      bool        `json:"retail_ready"`
-	Dir              string      `json:"dir"`
-	CanPick          bool        `json:"can_pick"` // the page may offer the system's folder dialog
-	Version          string      `json:"version"`
-	Launcher         string      `json:"launcher,omitempty"`
-	Notice           string      `json:"notice,omitempty"`
-	Installed        bool        `json:"installed"`
+	RetailVersion string `json:"retail_version"`
+	RetailNote    string `json:"retail_note"`
+	RetailReady   bool   `json:"retail_ready"`
+	Dir           string `json:"dir"`
+	CanPick       bool   `json:"can_pick"` // the page may offer the system's folder dialog
+	Version       string `json:"version"`
+	Launcher      string `json:"launcher,omitempty"`
+	Notice        string `json:"notice,omitempty"`
+	Installed     bool   `json:"installed"`
+	// InstalledVersion is set when a plain Forever client is on an earlier build than this launcher installs.
+	InstalledVersion string      `json:"installed_version,omitempty"`
 	ClassicInstalled bool        `json:"classic_installed"`
 	Busy             string      `json:"busy"`
 	Realm            RealmStatus `json:"realm"`
@@ -309,7 +311,10 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if state, err := install.LaunchState(resp.Dir); err == nil {
 		resp.Installed = true
 		base := pin.Default()
-		resp.ClassicInstalled = state.Pin.Product == base.Product && state.Pin.Version == base.Version && state.Pin.BuildConfig != base.BuildConfig && state.Pin.CDNConfig != base.CDNConfig
+		resp.ClassicInstalled = state.Pin.Product == base.Product && !pin.Blizzard(state.Pin.BuildConfig) && state.Pin.CDNConfig != base.CDNConfig
+		if state.Pin.Product == base.Product && state.Pin.Version != base.Version && pin.Blizzard(state.Pin.BuildConfig) {
+			resp.InstalledVersion = state.Pin.Version
+		}
 		resp.Quick = s.cachedQuick(resp.Dir)
 	}
 	writeJSON(w, resp)

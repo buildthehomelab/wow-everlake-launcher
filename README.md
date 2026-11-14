@@ -106,6 +106,12 @@ Work in progress. What works today:
   space). Nothing is removed until the update has succeeded. The game's own storage and anything it added are left
   alone. A trial install (`--no-data`, `--max-priority`, `--data-limit-mb`) never prunes data, so it can't delete
   what a fuller install fetched.
+- **When the pin moves** (1.60.1.70790 → 1.60.1.70938 on 2026-11-14), nothing is forced: an installed client keeps
+  starting on the build it has, the window says which build that is, and **Update** moves it. The builds this
+  launcher pinned before are listed in `internal/pin/pin.go` (`earlier`), so a client on one of them is known to be
+  a plain Forever client and updates on its own. A client with the Classic overlay is held back until the overlay
+  for the new build is there, since updating without it would drop its content; an overlay made for another build
+  is left out of a plain client's update.
 - **Joining a realm (Windows):** `play` signs in to the realm's login server and starts the game logged in, with the
   two in-memory changes the stock client needs to talk to it (see [Joining a realm](#joining-a-realm)). On macOS the
   game is hardened against this, so joining a realm stays with `wow-project-everlake`'s `everlake-client.sh`.
@@ -252,6 +258,9 @@ go test ./...                                   # format parsers + a whole insta
 EVERLAKE_WINDOW_TEST=1 go test -run Window ./internal/appwindow   # Windows: opens a real WebView2 window
 EVERLAKE_LIVE=1 go test -run Live ./internal/tact     # reads the real pinned build from Blizzard's CDN (~2 MB)
 EVERLAKE_LIVE=full go test -run Live ./internal/tact  # also the encoding file (~135 MB)
+EVERLAKE_REAL_WOW_EXE=<dir>/_forever_/Wow.exe go test -run RealGamePortal ./internal/gamepatch
+                                                # the login-name table in a real Windows game executable; run it
+                                                # when the pin moves (install --tags Windows,x86_64,enUS,US --no-data)
 ```
 
 ## Licence

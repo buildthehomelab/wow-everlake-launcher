@@ -7,8 +7,31 @@ import (
 
 func TestDefaultPin(t *testing.T) {
 	p := Default()
-	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wowf" || p.BuildID != 70790 {
+	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wowf" || p.BuildID != 70938 {
 		t.Errorf("default pin = %+v", p)
+	}
+}
+
+// An install on a build this launcher pinned earlier is a plain Forever client; anything else is an overlay build.
+func TestBlizzardBuilds(t *testing.T) {
+	if !Blizzard(Default().BuildConfig) {
+		t.Error("the pinned build isn't taken for Blizzard's")
+	}
+	if !Blizzard("9006ba6948388dd0d4a0578e64b8a92e") {
+		t.Error("1.60.1.70790, the pin before this one, isn't taken for Blizzard's")
+	}
+	if Blizzard("11111111111111111111111111111111") {
+		t.Error("an unknown build config is taken for Blizzard's")
+	}
+	if v, ok := earlier[Default().BuildConfig]; ok {
+		t.Errorf("the pinned build is also listed as an earlier one (%s)", v)
+	}
+	for key := range earlier {
+		p := Default()
+		p.BuildConfig = key
+		if p.Check() != nil {
+			t.Errorf("earlier build config %q is malformed", key)
+		}
 	}
 }
 

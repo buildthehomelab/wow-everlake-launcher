@@ -46,8 +46,16 @@ func installSharedClientMode(ctx context.Context, dir string, verify, adopt, str
 		return opts
 	}
 	if verify {
-		if state, err := install.ReadState(dir); err == nil && state.Pin.BuildConfig == pin.Default().BuildConfig {
-			return runInstall(ctx, options(), log)
+		// A plain Forever client is checked against the build it was installed from: after the pin has moved, that
+		// is an earlier build, which Install / update replaces. Checking it against the new pin would call every
+		// changed file damaged.
+		if state, err := install.ReadState(dir); err == nil && pin.Blizzard(state.Pin.BuildConfig) {
+			opts := options()
+			if state.Pin.BuildConfig != opts.Pin.BuildConfig {
+				log(fmt.Sprintf("this is %s; Install / update moves it to %s", state.Pin.Version, opts.Pin.Version))
+				opts.Pin = state.Pin
+			}
+			return runInstall(ctx, opts, log)
 		}
 	}
 	if !verify && gamesRunning() != 0 {
@@ -64,8 +72,9 @@ func installSharedClientMode(ctx context.Context, dir string, verify, adopt, str
 		var closeOverlay func()
 		data, host, closeOverlay, err = openLocalOverlay(dir)
 		if errors.Is(err, fs.ErrNotExist) {
-			if state, stateErr := install.ReadState(dir); stateErr == nil &&
-				state.Pin.BuildConfig != pin.Default().BuildConfig {
+			// Only an overlay build needs its overlay back. A plain client on an earlier pinned build is simply
+			// updated to the current pin.
+			if state, stateErr := install.ReadState(dir); stateErr == nil && !pin.Blizzard(state.Pin.BuildConfig) {
 				return fmt.Errorf("restore the shared client overlay before verifying or repairing this install")
 			}
 			return runInstall(ctx, options(), log)
@@ -82,6 +91,17 @@ func installSharedClientMode(ctx context.Context, dir string, verify, adopt, str
 		return fmt.Errorf("read Classic overlay manifest: %w", err)
 	}
 	p := pin.Default()
+	if manifest.Version != "" && manifest.Version != p.Version {
+		// An overlay made for another build (the pin has moved since). A plain client goes to the new pin without
+		// it; an overlay install waits for the overlay of the new build, since updating would drop its content.
+		if state, stateErr := install.ReadState(dir); stateErr == nil && !pin.Blizzard(state.Pin.BuildConfig) {
+			return fmt.Errorf("the Classic overlay here is for %s and this launcher installs %s: get the overlay "+
+				"for %s before verifying, repairing or updating this install", manifest.Version, p.Version, p.Version)
+		}
+		log(fmt.Sprintf("the Classic overlay here is for %s, not %s: left out, installing plain Forever",
+			manifest.Version, p.Version))
+		return runInstall(ctx, options(), log)
+	}
 	if manifest.BaseBuild != p.BuildConfig || manifest.BaseCDN != p.CDNConfig ||
 		manifest.Version != p.Version || manifest.CDNPath != p.CDNPath ||
 		manifest.Build == p.BuildConfig || manifest.CDN == p.CDNConfig || len(manifest.Added) == 0 {

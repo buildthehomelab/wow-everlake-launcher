@@ -77,6 +77,23 @@ func (p Pin) Check() error {
 	return nil
 }
 
+// earlier are Blizzard's own builds this launcher pinned before the current one, by build config. An install on one
+// of them is a plain Forever client that Install moves to the current pin. Any other build config that isn't the
+// current pin's is an Everlake overlay build (classic.go), which needs its overlay to be repaired or updated.
+var earlier = map[string]string{
+	"9006ba6948388dd0d4a0578e64b8a92e": "1.60.1.70790",
+}
+
+// Blizzard reports whether a build config is one of Blizzard's own Forever builds this launcher pins or pinned,
+// as opposed to an overlay build made on top of one.
+func Blizzard(buildConfig string) bool {
+	if buildConfig == Default().BuildConfig {
+		return true
+	}
+	_, ok := earlier[buildConfig]
+	return ok
+}
+
 // StartArgs are the arguments the game needs on its command line: -uid names the product, as Battle.net does.
 // Without it the Forever client also took itself for retail.
 func (p Pin) StartArgs() []string { return []string{"-uid", p.Product} }
