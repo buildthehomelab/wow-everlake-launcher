@@ -28,7 +28,9 @@ func Package(p pin.Pin) (map[string][]byte, error) {
 	}
 	var api int
 	switch {
-	case p.Product == "wowf" && p.Version == pin.Default().Version:
+	// Every build this launcher pins or pinned is 1.60.1, one interface number. A client left on an earlier build
+	// (the pin moved and it wasn't updated yet) keeps the package it was installed with, and Verify still checks it.
+	case p.Product == "wowf" && pin.Pinned(p.Version):
 		api = 16001
 	case p.Product == "wow" && p.Version == pin.Retail().Version:
 		api = 120105
