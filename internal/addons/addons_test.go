@@ -61,3 +61,23 @@ func TestUnmanagedAddonPreserved(t *testing.T) {
 		t.Fatal("overwrote unmanaged addon")
 	}
 }
+
+// A client left on the build pinned before the current one keeps a package Verify accepts; an unknown build doesn't.
+func TestEarlierPinnedBuildVerifies(t *testing.T) {
+	root := t.TempDir()
+	p := pin.Default()
+	p.Version, p.BuildID = "1.60.1.70790", 70790
+	if !pin.Pinned(p.Version) {
+		t.Fatal("1.60.1.70790 isn't known as an earlier pinned build")
+	}
+	if err := Install(root, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(root, p); err != nil {
+		t.Fatalf("Verify of a client on the earlier build: %v", err)
+	}
+	p.Version, p.BuildID = "1.60.1.60000", 60000
+	if _, err := Package(p); err == nil {
+		t.Fatal("packaged an addon for a build this launcher never pinned")
+	}
+}

@@ -94,6 +94,19 @@ func Blizzard(buildConfig string) bool {
 	return ok
 }
 
+// Pinned reports whether a Forever version is the one this launcher pins or one it pinned earlier.
+func Pinned(version string) bool {
+	if version == Default().Version {
+		return true
+	}
+	for _, v := range earlier {
+		if v == version {
+			return true
+		}
+	}
+	return false
+}
+
 // StartArgs are the arguments the game needs on its command line: -uid names the product, as Battle.net does.
 // Without it the Forever client also took itself for retail.
 func (p Pin) StartArgs() []string { return []string{"-uid", p.Product} }
