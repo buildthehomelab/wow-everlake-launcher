@@ -1,11 +1,15 @@
-Regular launcher update for Windows and macOS, available through the launcher updater.
+Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-Forever and the Everlake Classic–Wrath prototype share one client. In-place updates preserve the Classic overlay, verify and reuse matching files, download missing or damaged content, and avoid a second client or duplicate asset cache. Addons and WTF settings are preserved. Interrupted updates can resume. Changed files still need temporary free space; the previous game build is replaced.
+The launcher now installs WoW Forever 1.60.1.70938, Blizzard's live build since 13 November 2026. Until now it installed 1.60.1.70790.
 
-For limited disk space: finish any current download, close the game and other launchers, open Use an existing installation, choose Forever, and enter the existing root containing Data and .build.info. Leave destination empty and choose Update existing installation in place. Keep _era_/overlay available. Afterwards select that root using Change, verify files, and test Play and Play Classic–Wrath prototype. Shared Battle.net roots containing multiple products are rejected.
+Nothing changes until you choose it. Play keeps starting the build you already have. With 1.60.1.70790 installed, the status line says so, and Update moves the game to 1.60.1.70938, downloading only the files that changed. Verify files checks your client against the build it has.
 
-Includes account login, remembered credentials (Windows DPAPI / macOS Keychain), the packaged Everlake addon, shared verified assets, corruption repair, a compact launcher UI, and narration disabled for launcher sessions. Fixes native Mac microphone privacy crashes.
+Before you update the game: this launcher cannot put 1.60.1.70790 back. To keep it, open Use an existing installation, choose Forever, give your current game folder and an empty new folder, and choose Install using existing files. The new folder gets 1.60.1.70938, reusing every matching file, and your current folder stays as it is. That needs disk space for a second client.
 
-Validation: Windows-native unit and window tests, Mac and Linux CI, selective corruption repair, zero-download reuse, interruption/resume, and real shared-overlay in-place verification. Mac login and Forever world entry, addon execution and saved settings passed. Live gameplay on the user's Windows machine remains pending. Retail realm joining is excluded because the server is not available.
+A folder with the Classic–Wrath prototype overlay stays on 1.60.1.70790: there is no overlay for 1.60.1.70938 yet, and the launcher says so and leaves the folder alone. Play and Play Classic–Wrath prototype keep working there.
 
-Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included. The version advances to 0.1.1-alpha.1 so both prior regular releases and the Windows test build recognize it as newer.
+Validation: Windows, Linux and macOS test suites. The new build read from Blizzard's CDN. A real update of the Windows game program files from 1.60.1.70790 to 1.60.1.70938: only changed files fetched, full verification intact, and the same game executable as a fresh install. The login-name change the launcher makes was checked against the real 1.60.1.70938 game executable.
+
+Not validated yet: playing on 1.60.1.70938 with this launcher. The realm's key is put into the running game at login, which cannot be checked without the game. If the launcher's log stays at "server key: waiting for the game to open its key store" after you log in, close the game, use Log, Save diagnostics, and report it.
+
+Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included. The version goes to 0.1.2-alpha.1 so the regular releases and the Windows test build v0.1.1-alpha.2-windows-test.1 all recognise it as newer.

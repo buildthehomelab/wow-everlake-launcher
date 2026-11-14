@@ -24,6 +24,11 @@ func TestNewer(t *testing.T) {
 		{"v0.1.0-alpha.14", "v0.1.0-alpha.13", true},
 		{"v0.1.1-alpha.1", "v0.1.0-alpha.22", true},
 		{"v0.1.1-alpha.1", "v0.1.0-alpha.23-windows-test.1", true},
+		{"v0.1.2-alpha.1", "v0.1.1-alpha.1", true},
+		{"v0.1.2-alpha.1", "v0.1.1-alpha.2-windows-test.1", true},
+		// a Windows test build sorts above every plain alpha of its own version, so the release after it bumps the patch
+		{"v0.1.1-alpha.3", "v0.1.1-alpha.2-windows-test.1", false},
+		{"v0.1.1-alpha.1", "v0.1.1-alpha.2-windows-test.1", false},
 		{"v0.1.0-alpha.14", "0.1.0-alpha.13", true}, // with or without the v
 		{"v0.1.0-alpha.10", "v0.1.0-alpha.9", true}, // numbers by value, not as text
 		{"v0.1.0-alpha.9", "v0.1.0-alpha.10", false},
