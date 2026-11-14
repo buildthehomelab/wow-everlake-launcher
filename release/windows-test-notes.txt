@@ -1,16 +1,22 @@
-Opt-in Windows test build for Forever and the Everlake Classic–Wrath prototype using one shared client, including in-place updates without a second game copy. This prerelease does not replace the stable Mac release or automatically update existing Windows launchers.
+Opt-in Windows test build that installs WoW Forever 1.60.1.70938, Blizzard's live build since 13 November 2026 (the regular launcher installs 1.60.1.70790). It is a pre-release: launchers are never updated to it, and it does not replace itself with the regular release. Built from pull request #33.
 
-Download everlake-launcher-windows-amd64.exe (the windowed launcher). The CLI executable is optional.
+What is not known yet: the game has never been run on 70938 with this launcher. The update itself and the login-name change were checked against the real 70938 files; the server key is only handled in the running game, at login. This build is for finding that out.
 
-1. Close World of Warcraft and Battle.net.
-2. Open Use an existing installation and choose Forever.
-3. Set Existing client folder to the root containing .build.info and Data, not the _forever_ subfolder. Leave New destination folder empty.
-4. Click Update existing installation in place. Existing content is hash-checked; only missing or damaged content downloads. This mode creates no second client or duplicate asset cache. Addons and WTF settings are preserved. Some free space is still needed for changed files, and the old build is replaced rather than retained as a rollback copy.
-5. The Classic–Wrath prototype uses the same client and Data folder. Keep its existing _era_/overlay folder in place (or the configured EVERLAKE_CLIENT_CDN mirror available). In-place updates retain that overlay build. After updating, test both Play and Play Classic–Wrath prototype. This does not install a separate Blizzard Classic client.
-6. If interrupted, repeat the same action with the same folder. After success, use Change beside the launcher's folder to select that root, then Verify files and Play.
+Before testing
+- The realm must already accept 70938 clients. If it does not, you get no realm list whatever the launcher does.
+- Pick how to test:
+  - Safest: open Use an existing installation, choose Forever, set Existing client folder to your current game folder (the one with .build.info and Data) and New destination folder to an empty folder, then Install using existing files. Your current install is only read and stays on 70790; the new folder reuses its matching files and downloads the rest. It needs disk space for a second client.
+  - In place: open the launcher on your current folder. The status line says "You have build 1.60.1.70790" and Update moves it to 70938, downloading only changed files. To go back afterwards, run the regular launcher's command-line program: everlake-launcher-cli-windows-amd64.exe install --dir <your folder>.
+- A folder with the Classic overlay is not updated in place: no overlay exists for 70938 yet, and the launcher says so. Use the safest way above for it.
 
-Single-product Forever roots are supported. A shared Battle.net root containing multiple products is rejected without adopting it. Do not use Import / resume or Install using existing files for this low-space test: those options create a separate copy.
+Test
+1. Download everlake-launcher-windows-amd64.exe and start it.
+2. Install or update as chosen above, then Verify files.
+3. Play, sign in, pick a character and stay in the world for at least a minute.
 
-Automated coverage includes Windows-native tests, window loading, no duplicate client/cache, zero-download matching installs, selective corruption repair, interrupted adoption/resume, and preservation of addons/settings. Live gameplay on the user's Windows PC remains to be tested. Retail realm joining is excluded.
+What to report (Log, then Save diagnostics, or copy the lines)
+- "login name: any name allowed (1 of 1 table entries)" should appear soon after the game starts.
+- "server key: written (region group 8)" should appear when you log in. If the log stays at "server key: waiting for the game to open its key store" after you pressed Log in, this build does not find the key store on 70938, and that line is the result we need.
+- Whether you reached the character list, entered the world, and whether the game closed by itself.
 
-The executables are unsigned. SHA256SUMS.txt is included for integrity checks. Report any launcher error and preserve its log before retrying.
+The executables are unsigned. SHA256SUMS.txt is included for integrity checks.
