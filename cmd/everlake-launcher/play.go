@@ -217,7 +217,7 @@ func uiPlay() func(ctx context.Context, dir string, in webui.PlayInput, log func
 				return fmt.Errorf("email and password are needed to sign in")
 			}
 			state, err := install.ReadState(dir)
-			if err != nil || state.Pin.BuildConfig == pin.Default().BuildConfig {
+			if err != nil || pin.Blizzard(state.Pin.BuildConfig) {
 				return fmt.Errorf("install the shared client with the Classic overlay before playing Classic")
 			}
 		}

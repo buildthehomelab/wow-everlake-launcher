@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/pin"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -553,5 +556,52 @@ func TestQuickCheckDoesNotBlockOrDuplicatePolling(t *testing.T) {
 	case <-started:
 		t.Fatal("cached result scanned again")
 	default:
+	}
+}
+
+// After the pin moves, the status says which earlier build a plain client is on, and never for an overlay build.
+func TestStatusNamesEarlierBuild(t *testing.T) {
+	status := func(p pin.Pin) (out struct {
+		Installed        bool   `json:"installed"`
+		InstalledVersion string `json:"installed_version"`
+		ClassicInstalled bool   `json:"classic_installed"`
+	}) {
+		t.Helper()
+		dir := t.TempDir()
+		state, err := json.Marshal(install.State{Pin: p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, ".everlake"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".everlake", "install.json"), state, 0600); err != nil {
+			t.Fatal(err)
+		}
+		ts := httptest.NewServer(New(dir, pin.Default().Version, Actions{}).Handler())
+		defer ts.Close()
+		resp, err := http.Get(ts.URL + "/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if s := status(pin.Default()); !s.Installed || s.InstalledVersion != "" || s.ClassicInstalled {
+		t.Errorf("client on the pinned build: %+v", s)
+	}
+	earlier := pin.Default()
+	earlier.Version, earlier.BuildID = "1.60.1.70790", 70790
+	earlier.BuildConfig, earlier.CDNConfig = "9006ba6948388dd0d4a0578e64b8a92e", "0e139f0e95542dbe2a5462d8a6b2ebae"
+	if s := status(earlier); !s.Installed || s.InstalledVersion != "1.60.1.70790" || s.ClassicInstalled {
+		t.Errorf("plain client on the earlier build: %+v", s)
+	}
+	overlay := earlier
+	overlay.BuildConfig, overlay.CDNConfig = "11111111111111111111111111111111", "22222222222222222222222222222222"
+	if s := status(overlay); !s.Installed || s.InstalledVersion != "" || !s.ClassicInstalled {
+		t.Errorf("overlay client on the earlier build: %+v", s)
 	}
 }
