@@ -33,6 +33,8 @@ type Settings struct {
 	School string `json:"school,omitempty"`
 	// Animation false keeps the window's art still; missing follows the system's "reduce motion" setting.
 	Animation *bool `json:"animation,omitempty"`
+	// ClearCache false keeps the game's Cache folder when joining a realm; missing means it is emptied.
+	ClearCache *bool `json:"clear_cache,omitempty"`
 }
 
 // UpdateRecord is a launcher update that was put in place.
@@ -43,6 +45,9 @@ type UpdateRecord struct {
 
 // AutoUpdates reports whether the launcher may update itself.
 func (s Settings) AutoUpdates() bool { return s.AutoUpdate == nil || *s.AutoUpdate }
+
+// ClearsCache reports whether joining a realm empties the game's Cache folder first.
+func (s Settings) ClearsCache() bool { return s.ClearCache == nil || *s.ClearCache }
 
 // PasswordKey names a remembered password: one per login server and account.
 func PasswordKey(loginHost, email string) string {
