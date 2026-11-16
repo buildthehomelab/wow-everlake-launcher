@@ -43,7 +43,7 @@ func Launch(o Options) (*Game, error) {
 	}
 	source := filepath.Dir(filepath.Dir(filepath.Dir(o.Exe)))
 
-	if err := run("/usr/bin/ditto", source, app); err != nil {
+	if err := copyApp(run, source, app); err != nil {
 		return nil, err
 	}
 	c := filepath.Join(work, "keypatch.c")
@@ -109,4 +109,14 @@ func Launch(o Options) (*Game, error) {
 		close(done)
 	}()
 	return &Game{Pid: cmd.Process.Pid, Done: done}, nil
+}
+
+// copyApp makes the private app copy. On APFS (the default since macOS 10.13) cp -c clones it: no data is copied and
+// only the files codesign rewrites take new space. Elsewhere, or when cloning fails, it falls back to a full ditto copy.
+func copyApp(run func(string, ...string) error, source, app string) error {
+	if err := run("/bin/cp", "-c", "-R", source, app); err == nil {
+		return nil
+	}
+	os.RemoveAll(app)
+	return run("/usr/bin/ditto", source, app)
 }
