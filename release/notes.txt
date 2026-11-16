@@ -1,15 +1,11 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-The launcher now installs WoW Forever 1.60.1.70938, Blizzard's live build since 13 November 2026. Until now it installed 1.60.1.70790.
+Fresh data after a realm update: Play now empties the game's Cache folder after you sign in and before the game starts. The game keeps creature, quest and item data and hotfixes there, and could keep showing old data after the realm changed. Only the folder's contents are removed, files in use are left alone, and a problem never stops the launch. To keep the cache, set "clear_cache": false in launcher.json.
 
-Nothing changes until you choose it. Play keeps starting the build you already have. With 1.60.1.70790 installed, the status line says so, and Update moves the game to 1.60.1.70938, downloading only the files that changed. Verify files checks your client against the build it has.
+macOS:
+- The launcher clones the game app instead of copying it in full before each launch, so starting the game is quicker and takes almost no extra disk space on APFS (the standard Mac disk format). Other disks get a full copy as before.
+- The realm key is written into the game with a safe memory write: if the game moves its key store at the wrong moment, the launcher tries again instead of crashing the game.
 
-Before you update the game: this launcher cannot put 1.60.1.70790 back. To keep it, open Use an existing installation, choose Forever, give your current game folder and an empty new folder, and choose Install using existing files. The new folder gets 1.60.1.70938, reusing every matching file, and your current folder stays as it is. That needs disk space for a second client.
+Validation: Windows, Linux and macOS test suites, including a new macOS test that puts the key helper into a stand-in program holding a key store and checks it writes the realm key, and leaves a store it does not recognise alone. Not yet checked with the real game client on macOS.
 
-A folder with the Classic–Wrath prototype overlay stays on 1.60.1.70790: there is no overlay for 1.60.1.70938 yet, and the launcher says so and leaves the folder alone. Play and Play Classic–Wrath prototype keep working there.
-
-Validation: Windows, Linux and macOS test suites. The new build read from Blizzard's CDN. A real update of the Windows game program files from 1.60.1.70790 to 1.60.1.70938: only changed files fetched, full verification intact, and the same game executable as a fresh install. The login-name change the launcher makes was checked against the real 1.60.1.70938 game executable.
-
-Not validated yet: playing on 1.60.1.70938 with this launcher. The realm's key is put into the running game at login, which cannot be checked without the game. If the launcher's log stays at "server key: waiting for the game to open its key store" after you log in, close the game, use Log, Save diagnostics, and report it.
-
-Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included. The version goes to 0.1.2-alpha.1 so the regular releases and the Windows test build v0.1.1-alpha.2-windows-test.1 all recognise it as newer.
+Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
