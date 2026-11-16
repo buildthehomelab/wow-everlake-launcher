@@ -116,3 +116,15 @@ func TestChooseInstallDirRoot(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+func TestClearsCacheDefaultsOn(t *testing.T) {
+	off, on := false, true
+	for _, c := range []struct {
+		v    *bool
+		want bool
+	}{{nil, true}, {&on, true}, {&off, false}} {
+		if got := (Settings{ClearCache: c.v}).ClearsCache(); got != c.want {
+			t.Errorf("ClearsCache with %v = %t, want %t", c.v, got, c.want)
+		}
+	}
+}

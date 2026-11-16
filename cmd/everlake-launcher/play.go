@@ -158,6 +158,7 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 		return nil, fmt.Errorf("game config: %w", err)
 	}
 	log(fmt.Sprintf("signed in, game account %s", login.GameAccount))
+	clearCache(gameDir, log)
 
 	args := append(st.Pin.StartArgs(), "-launcherlogin", "-config", realm.WTFName)
 	game, err := gamepatch.Launch(gamepatch.Options{
@@ -180,6 +181,23 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 	tracked = true
 	log(fmt.Sprintf("started the game (process %d)", game.Pid))
 	return game, nil
+}
+
+// clearCache empties the game's Cache folder before it joins a realm, so it doesn't show creature, quest or item
+// data from an earlier state of the realm. clear_cache false in launcher.json turns it off. It never stops a launch.
+func clearCache(gameDir string, log func(string)) {
+	if s, _ := settings.Load(); !s.ClearsCache() {
+		return
+	}
+	removed, failed, err := install.ClearGameCache(gameDir)
+	switch {
+	case err != nil:
+		log("couldn't clear the game's cache: " + err.Error())
+	case failed > 0:
+		log(fmt.Sprintf("cleared the game's cache (%d left in use)", failed))
+	case removed > 0:
+		log("cleared the game's cache")
+	}
 }
 
 // uiPlay is the page's Play button: with a login server, join that realm; without one, start the game on its own.
