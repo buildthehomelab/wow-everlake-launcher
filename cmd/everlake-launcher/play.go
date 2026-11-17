@@ -180,7 +180,48 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 	}
 	tracked = true
 	log(fmt.Sprintf("started the game (process %d)", game.Pid))
+	started := time.Now()
+	go func() {
+		<-game.Done
+		if msg := earlyExit(game.ExitCode, time.Since(started)); msg != "" {
+			log(msg)
+		}
+	}()
 	return game, nil
+}
+
+// earlyStart is how soon after starting a game that closes counts as one that never got going.
+const earlyStart = time.Minute
+
+// earlyExit explains a game that closed within earlyStart of starting, from its exit code, or is "" for one that
+// ran longer. Windows reports a program that fails to load its DLLs with a status code, not a window, so without
+// this the launcher's log says the game started and nothing more.
+func earlyExit(code int, ran time.Duration) string {
+	if ran >= earlyStart {
+		return ""
+	}
+	msg := fmt.Sprintf("the game closed %s after starting", ran.Round(100*time.Millisecond))
+	if code < 0 {
+		return msg
+	}
+	if code <= 0xff {
+		msg += fmt.Sprintf(" (exit code %d)", code)
+	} else {
+		msg += fmt.Sprintf(" (exit code 0x%08X)", uint32(code))
+	}
+	switch uint32(code) {
+	case 0xC0000135: // STATUS_DLL_NOT_FOUND
+		msg += ": Windows couldn't find a DLL the game needs. Run Verify, then Install to repair"
+	case 0xC000007B: // STATUS_INVALID_IMAGE_FORMAT
+		msg += ": a DLL the game loaded is damaged or built for another kind of Windows. Run Verify and move out " +
+			"any DLL it lists as not the game's"
+	case 0xC0000142: // STATUS_DLL_INIT_FAILED
+		msg += ": a DLL the game loaded failed to start, often an overlay or injector. Run Verify and move out any " +
+			"DLL it lists as not the game's"
+	case 0xC0000022: // STATUS_ACCESS_DENIED
+		msg += ": Windows refused to run it; check whether antivirus blocked the game"
+	}
+	return msg
 }
 
 // clearCache empties the game's Cache folder before it joins a realm, so it doesn't show creature, quest or item

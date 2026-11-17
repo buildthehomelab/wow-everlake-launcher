@@ -99,6 +99,14 @@ Work in progress. What works today:
   compares the client files (the loose files, configs, indexes, `.build.info`, `.flavor.info`) against the size and
   timestamp recorded at install, in a few milliseconds and without hashing. It doesn't deep-check the game's data
   storage (`Data/data`) — the full `verify` does that.
+- Neither check can vouch for files the build doesn't have: settings in `WTF`, the player's add-ons, `Cache`, and
+  anything else dropped into the game folder. Verify, quick check and install do name one kind of these, because it
+  can stop the game from starting with every game file intact: a DLL (or `.asi` plug-in) next to the game or in its
+  `Utils` or `D3D12` folder that isn't the build's. Windows loads it into the game before its own copy (overlays,
+  graphics injectors such as `dxgi.dll` or `version.dll`, leftovers from another client). They're listed as
+  `NOT GAME`, not counted as damage, and never removed.
+- When the game closes within a minute of Play starting it, the log says so with its exit code, and explains the
+  Windows codes for a DLL that's missing, damaged or failed to start.
 - A run that's stopped or killed resumes: the key tables are saved every 30 seconds, and a half-written archive
   with nothing pointing into it is removed.
 - **Updating to a new pinned build** is the same `install`: it keeps every file whose key didn't change, fetches

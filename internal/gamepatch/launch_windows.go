@@ -56,8 +56,10 @@ func Launch(o Options) (*Game, error) {
 	}
 
 	done := make(chan struct{})
+	game := &Game{Pid: cmd.Process.Pid, Done: done, ExitCode: -1}
 	go func() {
 		cmd.Wait()
+		game.ExitCode = cmd.ProcessState.ExitCode()
 		close(done)
 	}()
 	go func() {
@@ -66,7 +68,7 @@ func Launch(o Options) (*Game, error) {
 		users.Wait()
 		proc.Close()
 	}()
-	return &Game{Pid: cmd.Process.Pid, Done: done}, nil
+	return game, nil
 }
 
 // portalControl keeps the login-name check switched off only while it's needed: from start-up until the player is
