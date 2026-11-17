@@ -1,11 +1,9 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-When the game won't start:
-- Verify, Install and the launch check now list DLL files in the game folder that aren't part of the game, marked NOT GAME. Windows loads a DLL that sits next to the game before its own copy: overlays, graphics mods such as ReShade (dxgi.dll, d3d11.dll), or leftovers from another client. A broken one stops the game from starting even when every game file is intact, which Verify could not see before. The launcher only names these files; it never removes them. If the game won't start, move them out of the game folder and try again.
-- When the game closes within a minute of Play starting it, the log now says so with the game's exit code, and explains in plain words the Windows codes for a missing, damaged or failing DLL and for antivirus blocking the game. Until now the log only said the game had started.
+Play no longer deletes the game's saved hotfixes. Since v0.1.2-alpha.2, Play emptied the whole Cache folder before joining a realm, including Cache\ADB, where the game keeps the realm's hotfixes. Now it empties only Cache\WDB, the creature, quest and item data that goes stale when the realm changes. Without its saved hotfixes the game downloads all of them again while entering the world. Some players' games have crashed on the loading screen since the last update (ERROR #132 ACCESS_VIOLATION). We don't know yet whether the missing hotfix cache causes that crash.
 
-Verify still doesn't check files the game doesn't ship: WTF settings, the Cache folder and your own add-ons.
+To keep the whole Cache folder, set "clear_cache": false in launcher.json, as before.
 
-Validation: Windows, Linux and macOS test suites, including new tests for the DLL listing and the exit messages. Checked against a real Windows game folder on macOS: a damaged Wow.exe is still found and repaired, and five stray DLLs that Verify passed before are now listed. Not yet checked on Windows with a game that fails to start.
+Validation: Windows, Linux and macOS test suites, including new tests that Play empties WDB and leaves ADB and everything else alone. Not yet checked with the game.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
