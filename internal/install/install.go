@@ -69,13 +69,16 @@ type Options struct {
 
 // Report counts what happened. Bad and Missing are only non-zero after a Verify run or a failed install.
 type Report struct {
-	LooseFiles, LooseKept, LooseFetched    int
-	DataFiles, DataKept, DataFetched       int
-	DataSkippedByLimit                     int
-	BytesDownloaded                        int64
-	PrunedFiles, PrunedData                int   // old-build files and data entries removed on an update
-	Reclaimed                              int64 // bytes freed by removing old-build archives
-	Bad, Missing                           []string
+	LooseFiles, LooseKept, LooseFetched int
+	DataFiles, DataKept, DataFetched    int
+	DataSkippedByLimit                  int
+	BytesDownloaded                     int64
+	PrunedFiles, PrunedData             int   // old-build files and data entries removed on an update
+	Reclaimed                           int64 // bytes freed by removing old-build archives
+	Bad, Missing                        []string
+	// Foreign lists DLLs in the game's program folders that the build doesn't have (see foreignPrograms). They
+	// aren't damage, so they don't make the report fail, but one of them can stop the game from starting.
+	Foreign                                []string
 	Version, BuildConfig, CDNConfig, Where string
 }
 
@@ -357,6 +360,7 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 	if err := r.looseFiles(ctx, idx, inst); err != nil {
 		return nil, err
 	}
+	r.foreign()
 	if !opts.NoData {
 		if err := r.dataFiles(ctx, idx, dl, system); err != nil {
 			return nil, err
@@ -1333,6 +1337,11 @@ func QuickVerify(dir string) (*Report, error) {
 			rep.Bad = append(rep.Bad, p)
 		}
 	}
+	owned := make([]string, len(st.Files))
+	for i, f := range st.Files {
+		owned[i] = f.Path
+	}
+	rep.Foreign = foreignPrograms(dir, st.Pin.GameFolder, owned)
 	// The key tables are small and the client refuses to start when one is damaged, so they're read here too.
 	if s, err := casc.OpenReadOnly(filepath.Join(dir, "Data", "data")); err == nil {
 		rep.Bad = append(rep.Bad, s.Bad()...)

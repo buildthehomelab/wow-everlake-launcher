@@ -30,6 +30,8 @@ type Game struct {
 	Pid int
 	// Done is closed when the game process has exited.
 	Done <-chan struct{}
+	// ExitCode is the game's exit code, set before Done is closed (-1 if it isn't known).
+	ExitCode int
 }
 
 func (o *Options) defaults() {

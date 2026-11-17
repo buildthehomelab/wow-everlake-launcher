@@ -99,8 +99,10 @@ func Launch(o Options) (*Game, error) {
 	}
 	success = true
 	done := make(chan struct{})
+	game := &Game{Pid: cmd.Process.Pid, Done: done, ExitCode: -1}
 	go func() {
 		err := cmd.Wait()
+		game.ExitCode = cmd.ProcessState.ExitCode()
 		if err != nil {
 			o.Log("Game exited: " + err.Error())
 		}
@@ -108,7 +110,7 @@ func Launch(o Options) (*Game, error) {
 		os.RemoveAll(app)
 		close(done)
 	}()
-	return &Game{Pid: cmd.Process.Pid, Done: done}, nil
+	return game, nil
 }
 
 // copyApp makes the private app copy. On APFS (the default since macOS 10.13) cp -c clones it: no data is copied and

@@ -226,6 +226,7 @@ func cmdInstall(ctx context.Context, args []string, verify bool) error {
 	for _, m := range rep.Missing {
 		logf("MISSING %s", m)
 	}
+	logForeign(func(s string) { logf("%s", s) }, rep.Foreign)
 	if rep.Failed() {
 		return fmt.Errorf("%d bad, %d missing", len(rep.Bad), len(rep.Missing))
 	}
@@ -257,6 +258,7 @@ func quickVerify(dir string) error {
 	for _, m := range rep.Missing {
 		logf("MISSING %s", m)
 	}
+	logForeign(func(s string) { logf("%s", s) }, rep.Foreign)
 	logf("quick check of %s in %s", dir, time.Since(start).Round(time.Millisecond))
 	if rep.Failed() {
 		return fmt.Errorf("%d changed, %d missing; run 'verify' (without --quick) to repair", len(rep.Bad),
@@ -459,6 +461,7 @@ func runInstall(ctx context.Context, opts install.Options, log func(string)) err
 	for _, m := range rep.Missing {
 		log("MISSING " + m)
 	}
+	logForeign(log, rep.Foreign)
 	if rep.Failed() {
 		return fmt.Errorf("%d bad, %d missing", len(rep.Bad), len(rep.Missing))
 	}
@@ -466,6 +469,19 @@ func runInstall(ctx context.Context, opts install.Options, log func(string)) err
 		log("everything checked is intact")
 	}
 	return nil
+}
+
+// logForeign names the DLLs in the game's folders that the build doesn't have. Verify and repair can't vouch for
+// them, and Windows loads them into the game, so a broken one stops it from starting with every game file intact.
+func logForeign(log func(string), paths []string) {
+	for _, p := range paths {
+		log("NOT GAME  " + p)
+	}
+	if len(paths) > 0 {
+		log(fmt.Sprintf("%d DLL file(s) above aren't part of the game, so verify can't check them, but Windows loads "+
+			"them into it (overlays, graphics injectors, leftovers from another client). If the game won't start, "+
+			"move them out of the game folder and try again", len(paths)))
+	}
 }
 
 // uiDir is the install folder the window opens on: the one picked in it last time, else defaultDir.
