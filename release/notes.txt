@@ -1,11 +1,11 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-Fresh data after a realm update: Play now empties the game's Cache folder after you sign in and before the game starts. The game keeps creature, quest and item data and hotfixes there, and could keep showing old data after the realm changed. Only the folder's contents are removed, files in use are left alone, and a problem never stops the launch. To keep the cache, set "clear_cache": false in launcher.json.
+When the game won't start:
+- Verify, Install and the launch check now list DLL files in the game folder that aren't part of the game, marked NOT GAME. Windows loads a DLL that sits next to the game before its own copy: overlays, graphics mods such as ReShade (dxgi.dll, d3d11.dll), or leftovers from another client. A broken one stops the game from starting even when every game file is intact, which Verify could not see before. The launcher only names these files; it never removes them. If the game won't start, move them out of the game folder and try again.
+- When the game closes within a minute of Play starting it, the log now says so with the game's exit code, and explains in plain words the Windows codes for a missing, damaged or failing DLL and for antivirus blocking the game. Until now the log only said the game had started.
 
-macOS:
-- The launcher clones the game app instead of copying it in full before each launch, so starting the game is quicker and takes almost no extra disk space on APFS (the standard Mac disk format). Other disks get a full copy as before.
-- The realm key is written into the game with a safe memory write: if the game moves its key store at the wrong moment, the launcher tries again instead of crashing the game.
+Verify still doesn't check files the game doesn't ship: WTF settings, the Cache folder and your own add-ons.
 
-Validation: Windows, Linux and macOS test suites, including a new macOS test that puts the key helper into a stand-in program holding a key store and checks it writes the realm key, and leaves a store it does not recognise alone. Not yet checked with the real game client on macOS.
+Validation: Windows, Linux and macOS test suites, including new tests for the DLL listing and the exit messages. Checked against a real Windows game folder on macOS: a damaged Wow.exe is still found and repaired, and five stray DLLs that Verify passed before are now listed. Not yet checked on Windows with a game that fails to start.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
