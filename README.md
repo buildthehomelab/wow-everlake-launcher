@@ -193,9 +193,10 @@ below); a host may name its scheme (`http://` is the default, `https://` also wo
 2. Leaves the ticket where the game reads it when started with `-launcherlogin`: `HKEY_CURRENT_USER\Software\Blizzard
    Entertainment\Battle.net\Launch Options\WoW` (`WEB_TOKEN`, encrypted for your Windows user; `GAME_ACCOUNT`;
    `CONNECTION_STRING`). Battle.net rewrites these whenever it starts WoW itself.
-3. Empties the game's `Cache` folder (`_forever_\Cache`: WDB and ADB), so the game doesn't show creature, quest or
-   item data from an earlier state of the realm; it asks the server again. Only that folder's contents go, files in
-   use are left, and a failure never stops the launch. `"clear_cache": false` in `launcher.json` turns it off.
+3. Empties the game's `Cache\WDB` folder (`_forever_\Cache\WDB`), so the game doesn't show creature, quest or item
+   data from an earlier state of the realm; it asks the server again. `Cache\ADB`, the realm's hotfixes, stays: a
+   client that had to fetch every hotfix at once crashed entering the world. Only WDB's contents go, files in use
+   are left, and a failure never stops the launch. `"clear_cache": false` in `launcher.json` turns it off.
 4. Writes `_forever_\WTF\Everlake.wtf` (your `Config.wtf` plus the login server) and starts
    `Wow.exe -uid wowf -launcherlogin -config Everlake.wtf`.
 5. Changes two things in the running game's memory. It starts the game normally (never pauses it) and only writes
