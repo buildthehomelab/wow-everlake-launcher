@@ -224,8 +224,8 @@ func earlyExit(code int, ran time.Duration) string {
 	return msg
 }
 
-// clearCache empties the game's Cache folder before it joins a realm, so it doesn't show creature, quest or item
-// data from an earlier state of the realm. clear_cache false in launcher.json turns it off. It never stops a launch.
+// clearCache empties the game's Cache/WDB folder before it joins a realm, so it doesn't show creature, quest or item
+// data from an earlier state of the realm; the hotfixes in Cache/ADB stay (install.ClearGameCache). clear_cache false in launcher.json turns it off. It never stops a launch.
 func clearCache(gameDir string, log func(string)) {
 	if s, _ := settings.Load(); !s.ClearsCache() {
 		return

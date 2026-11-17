@@ -33,7 +33,7 @@ type Settings struct {
 	School string `json:"school,omitempty"`
 	// Animation false keeps the window's art still; missing follows the system's "reduce motion" setting.
 	Animation *bool `json:"animation,omitempty"`
-	// ClearCache false keeps the game's Cache folder when joining a realm; missing means it is emptied.
+	// ClearCache false keeps the game's Cache/WDB folder when joining a realm; missing means it is emptied.
 	ClearCache *bool `json:"clear_cache,omitempty"`
 }
 
