@@ -1,9 +1,9 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-Play no longer deletes the game's saved hotfixes. Since v0.1.2-alpha.2, Play emptied the whole Cache folder before joining a realm, including Cache\ADB, where the game keeps the realm's hotfixes. Now it empties only Cache\WDB, the creature, quest and item data that goes stale when the realm changes. Without its saved hotfixes the game downloads all of them again while entering the world. Some players' games have crashed on the loading screen since the last update (ERROR #132 ACCESS_VIOLATION). We don't know yet whether the missing hotfix cache causes that crash.
+The launcher now installs and updates the game to Blizzard's WoW Forever build 1.60.1.70959, the Battle.net update of 17 November. A game on 70938 updates to 70959 the next time you press Play or Install. Only 62 files changed between the two builds (game tables, interface files and the game programs), so the update is small. No map, model or texture files changed.
 
-To keep the whole Cache folder, set "clear_cache": false in launcher.json, as before.
+If you play with the Classic overlay, the launcher keeps your game on 70938 until the overlay for 70959 is published.
 
-Validation: Windows, Linux and macOS test suites, including new tests that Play empties WDB and leaves ADB and everything else alone. Not yet checked with the game.
+Validation: Windows, Linux and macOS test suites. The login-name patch was checked against the real 70959 Windows Wow.exe. Not yet checked by joining the realm with a 70959 game.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
