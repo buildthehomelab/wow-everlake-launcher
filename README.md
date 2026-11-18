@@ -114,7 +114,7 @@ Work in progress. What works today:
   space). Nothing is removed until the update has succeeded. The game's own storage and anything it added are left
   alone. A trial install (`--no-data`, `--max-priority`, `--data-limit-mb`) never prunes data, so it can't delete
   what a fuller install fetched.
-- **When the pin moves** (1.60.1.70790 → 1.60.1.70938 on 2026-11-14), nothing is forced: an installed client keeps
+- **When the pin moves** (1.60.1.70790 → 1.60.1.70938 on 2026-11-14, → 1.60.1.70959 on 2026-11-18), nothing is forced: an installed client keeps
   starting on the build it has, the window says which build that is, and **Update** moves it. The builds this
   launcher pinned before are listed in `internal/pin/pin.go` (`earlier`), so a client on one of them is known to be
   a plain Forever client and updates on its own. A client with the Classic overlay is held back until the overlay

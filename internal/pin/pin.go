@@ -82,6 +82,7 @@ func (p Pin) Check() error {
 // current pin's is an Everlake overlay build (classic.go), which needs its overlay to be repaired or updated.
 var earlier = map[string]string{
 	"9006ba6948388dd0d4a0578e64b8a92e": "1.60.1.70790",
+	"3627b099867bfde3e37a17cf44f69cdc": "1.60.1.70938",
 }
 
 // Blizzard reports whether a build config is one of Blizzard's own Forever builds this launcher pins or pinned,

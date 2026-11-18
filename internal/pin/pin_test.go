@@ -7,7 +7,7 @@ import (
 
 func TestDefaultPin(t *testing.T) {
 	p := Default()
-	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wowf" || p.BuildID != 70938 {
+	if p.Product != "wowf" || p.GameFolder != "_forever_" || p.Flavor != "wowf" || p.BuildID != 70959 {
 		t.Errorf("default pin = %+v", p)
 	}
 }
@@ -18,7 +18,10 @@ func TestBlizzardBuilds(t *testing.T) {
 		t.Error("the pinned build isn't taken for Blizzard's")
 	}
 	if !Blizzard("9006ba6948388dd0d4a0578e64b8a92e") {
-		t.Error("1.60.1.70790, the pin before this one, isn't taken for Blizzard's")
+		t.Error("1.60.1.70790, an earlier pin, isn't taken for Blizzard's")
+	}
+	if !Blizzard("3627b099867bfde3e37a17cf44f69cdc") {
+		t.Error("1.60.1.70938, the pin before this one, isn't taken for Blizzard's")
 	}
 	if Blizzard("11111111111111111111111111111111") {
 		t.Error("an unknown build config is taken for Blizzard's")
