@@ -1,11 +1,9 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-Fixes the game quitting about 10 seconds after Play, with no error window, after the update to build 1.60.1.70959. The game's log (Logs\Tact.log) says "Missing segment header for archive '0', repair needed". Each game data archive starts with 16 small records that the game checks when it starts. Earlier launchers didn't write them, and the update deleted the ones the game had added. Build 70959 refuses to start without them.
+Makes joining a realm with game build 1.60.1.70959 work on more PCs. When you log in, the launcher puts the realm's key into a table the game keeps in memory. On some PCs, build 70959 does not build that table, so the launcher had nowhere to write the key and the realm login failed. If no table turns up within 20 seconds of the key appearing in memory, the launcher now writes the realm's key over every copy of the key the realm needs, and keeps doing so for copies the game makes later. On PCs where the game builds the table, nothing changes.
 
-After this update the launcher shows "Needs repair" for most installs. Press Repair (or Install): it writes the missing records, moves the few files they replace, and removes the game's repair marker. Almost nothing is downloaded. Then press Play.
+The launcher also writes its "server key" lines to .everlake\server-key.log in the install folder, and Save diagnostics includes that file, so a report shows how the key was handled even after the launcher was closed and opened again.
 
-New archives get the records from the start, and later updates keep them.
-
-Validation: Windows, Linux and macOS test suites. On a Windows PC with this error, a test build of this fix repaired the install and the game ran again. On macOS, the 70959 game failed with the same error after its records were removed, and opened its storage after the repair.
+Validation: Windows, Linux and macOS test suites. On a Windows PC with build 70959, a test build of this change joined the realm and entered the world; that PC builds the table, so it took the normal path. The new backup mode has not yet been seen on a PC that needs it.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
