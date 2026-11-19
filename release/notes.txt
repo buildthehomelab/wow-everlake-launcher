@@ -1,9 +1,11 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-The launcher now installs and updates the game to Blizzard's WoW Forever build 1.60.1.70959, the Battle.net update of 17 November. A game on 70938 updates to 70959 the next time you press Play or Install. Only 62 files changed between the two builds (game tables, interface files and the game programs), so the update is small. No map, model or texture files changed.
+Fixes the game quitting about 10 seconds after Play, with no error window, after the update to build 1.60.1.70959. The game's log (Logs\Tact.log) says "Missing segment header for archive '0', repair needed". Each game data archive starts with 16 small records that the game checks when it starts. Earlier launchers didn't write them, and the update deleted the ones the game had added. Build 70959 refuses to start without them.
 
-If you play with the Classic overlay, the launcher keeps your game on 70938 until the overlay for 70959 is published.
+After this update the launcher shows "Needs repair" for most installs. Press Repair (or Install): it writes the missing records, moves the few files they replace, and removes the game's repair marker. Almost nothing is downloaded. Then press Play.
 
-Validation: Windows, Linux and macOS test suites. The login-name patch was checked against the real 70959 Windows Wow.exe. Not yet checked by joining the realm with a 70959 game.
+New archives get the records from the start, and later updates keep them.
+
+Validation: Windows, Linux and macOS test suites. On a Windows PC with this error, a test build of this fix repaired the install and the game ran again. On macOS, the 70959 game failed with the same error after its records were removed, and opened its storage after the repair.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
