@@ -44,7 +44,7 @@ func TestEntryHeader(t *testing.T) {
 		want   string
 	}{{1234, 0, "ffeeddccbbaa99887766554433221100d20400000000cdae61deb87b97a4"},
 		{99999, 1073000000, "ffeeddccbbaa998877665544332211009f860100000091a05b64114aa032"}} {
-		if got := hex.EncodeToString(entryHeader(k, c.size, c.offset)); got != c.want {
+		if got := hex.EncodeToString(entryHeader(k, c.size, 0, c.offset)); got != c.want {
 			t.Errorf("entryHeader(%d, %d) = %s, want %s", c.size, c.offset, got, c.want)
 		}
 	}
@@ -265,7 +265,7 @@ func TestKeepsClientEntries(t *testing.T) {
 	blob, e := tacttest.Plain([]byte("client file"))
 	k := short(e)
 	b := (Bucket(k) + 1) % 16
-	arch := append(entryHeader(e, uint32(headerLen+len(blob)), 0), blob...)
+	arch := append(entryHeader(e, uint32(headerLen+len(blob)), 0, 0), blob...)
 	os.WriteFile(filepath.Join(data, "data.000"), arch, 0o644)
 	name := fmt.Sprintf("%02x%08x.idx", b, 0x23)
 	os.WriteFile(filepath.Join(data, name), buildIndex(b, []entry{{k, Loc{Size: uint32(len(arch))}}}, nil), 0o644)
@@ -358,7 +358,7 @@ func TestClientDuplicatesAndBytesKept(t *testing.T) {
 	dir := t.TempDir()
 	data := filepath.Join(dir, "data")
 	blob, e := tacttest.Plain([]byte("client file"))
-	arch := append(entryHeader(e, uint32(headerLen+len(blob)), 0), blob...)
+	arch := append(entryHeader(e, uint32(headerLen+len(blob)), 0, 0), blob...)
 	k := short(e)
 	b := Bucket(k)
 	loc := Loc{Size: uint32(len(arch))}
@@ -512,7 +512,7 @@ func TestPrune(t *testing.T) {
 
 	// A file the client wrote (its own archive + index), which Prune must never touch.
 	blob, ce := tacttest.Plain([]byte("client file kept forever"))
-	arch := append(entryHeader(ce, uint32(headerLen+len(blob)), 0), blob...)
+	arch := append(entryHeader(ce, uint32(headerLen+len(blob)), 0, 0), blob...)
 	ck := short(ce)
 	cb := Bucket(ck)
 	clientStorage(t, data, map[int][]entry{cb: {{ck, Loc{Size: uint32(len(arch))}}}})
