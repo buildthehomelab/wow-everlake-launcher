@@ -445,7 +445,10 @@ func TestQuickVerify(t *testing.T) {
 		t.Fatalf("quick check after install: %+v %v", rep, err)
 	}
 	// Changes to the game's own storage and the launcher's records must not trip the quick check.
-	os.WriteFile(filepath.Join(dir, "Data", "data", "data.000"), []byte("the game grew this"), 0o644)
+	if g, err := os.OpenFile(filepath.Join(dir, "Data", "data", "data.000"), os.O_WRONLY|os.O_APPEND, 0); err == nil {
+		g.Write([]byte("the game grew this"))
+		g.Close()
+	}
 	os.WriteFile(filepath.Join(dir, ".everlake", "scratch"), []byte("x"), 0o644)
 	if rep, err := QuickVerify(dir); err != nil || rep.Failed() {
 		t.Fatalf("quick check minds Data/data: %+v %v", rep, err)

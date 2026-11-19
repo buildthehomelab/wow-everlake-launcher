@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -203,17 +204,16 @@ func open(dir, ownPath string, readOnly bool) (*Storage, error) {
 	if err := s.readOwn(); err != nil {
 		return nil, err
 	}
-	used := map[int]bool{}
-	for _, bf := range s.buckets {
-		for _, l := range bf.entries {
-			used[l.Archive] = true
-		}
-	}
+	used := s.usedArchives()
 	var keep []int
 	for _, n := range s.own {
 		if used[n] {
 			keep = append(keep, n)
 			continue
+		}
+		s.dropSegmentEntries(n)
+		if err := s.flush(); err != nil {
+			return nil, err
 		}
 		if err := os.Remove(s.archivePath(n)); err != nil && !os.IsNotExist(err) {
 			return nil, err
@@ -279,12 +279,16 @@ func (s *Storage) writeOwn() error {
 }
 
 // Len is the number of index entries.
-func (s *Storage) Len() int {
+func (s *Storage) Len() int { // stored files; the archives' own records don't count
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
-	for _, bf := range s.buckets {
-		n += len(bf.entries)
+	for b, bf := range s.buckets {
+		for _, l := range bf.entries {
+			if !isSegment(b, l) {
+				n++
+			}
+		}
 	}
 	return n
 }
@@ -382,7 +386,7 @@ func (s *Storage) Add(k tact.Key, blob []byte) error {
 		}
 	}
 	buf := make([]byte, 0, size)
-	buf = append(buf, entryHeader(k, uint32(size), s.wOff)...)
+	buf = append(buf, entryHeader(k, uint32(size), s.wNum, s.wOff)...)
 	buf = append(buf, blob...)
 	if _, err := s.w.WriteAt(buf, s.wOff); err != nil {
 		return err
@@ -440,8 +444,17 @@ func (s *Storage) roll() error {
 		s.writeOwn()
 		return err
 	}
-	s.w, s.wNum, s.wOff = f, n, 0
+	if _, err := f.WriteAt(segmentHeader(n), 0); err != nil {
+		f.Close()
+		return err
+	}
+	var keys [16]ShortKey
+	for b := 0; b < 16; b++ {
+		keys[b] = short(segmentKey(n, b))
+	}
+	s.w, s.wNum, s.wOff = f, n, segmentLen
 	s.archives[n] = true
+	s.addSegmentEntries(n, keys)
 	return nil
 }
 
@@ -502,9 +515,9 @@ func (s *Storage) Prune(keep map[tact.Key]bool) (entries, archives int, reclaime
 	for _, n := range s.own {
 		own[n] = true
 	}
-	for _, bf := range s.buckets {
+	for b, bf := range s.buckets {
 		for k, loc := range bf.entries {
-			if !keepShort[k] && own[loc.Archive] {
+			if !keepShort[k] && own[loc.Archive] && !isSegment(b, loc) {
 				delete(bf.entries, k)
 				bf.dirty = true
 				entries++
@@ -534,12 +547,7 @@ func (s *Storage) ReclaimUnreferenced() (int, int64, error) {
 }
 
 func (s *Storage) reclaimUnreferenced() (archives int, reclaimed int64, err error) {
-	used := map[int]bool{}
-	for _, bf := range s.buckets {
-		for _, loc := range bf.entries {
-			used[loc.Archive] = true
-		}
-	}
+	used := s.usedArchives()
 	var keepOwn []int
 	for _, n := range s.own {
 		if used[n] || (s.w != nil && n == s.wNum) { // never delete the archive currently being written
@@ -552,6 +560,10 @@ func (s *Storage) reclaimUnreferenced() (archives int, reclaimed int64, err erro
 		}
 		if fi, e := os.Stat(s.archivePath(n)); e == nil {
 			reclaimed += fi.Size()
+		}
+		s.dropSegmentEntries(n)
+		if e := s.flush(); e != nil { // the key tables stop naming the archive before it goes
+			return archives, reclaimed, e
 		}
 		if e := os.Remove(s.archivePath(n)); e != nil && !os.IsNotExist(e) {
 			return archives, reclaimed, e
@@ -739,30 +751,324 @@ func buildIndex(bucket int, entries []entry, orig []byte) []byte {
 var offsetTable = [16]uint32{0x049396b8, 0x72a82a9b, 0xee626cca, 0x9917754f, 0x15de40b1, 0xf5a8a9b6, 0x421eac7e,
 	0xa9d55c9a, 0x317fd40c, 0x04faf80d, 0x3d6be971, 0x52933cfd, 0x27f64b7d, 0xc6f5c11b, 0xd5757e3a, 0x6c388745}
 
-// entryHeader is the 30-byte header in front of a stored file (CascLib's VerifyHeaderSpan): the encoded key
-// reversed, the size with the header, two flag bytes, a Jenkins hash of those, and a checksum that mixes in the
-// header's offset in its archive.
-func entryHeader(k tact.Key, size uint32, offset int64) []byte {
+// entryHeader is the 30-byte header in front of a stored file (CascLib's VerifyHeaderSpan, wowdev's CASC page): the
+// encoded key reversed, the size with the header, two flag bytes, a Jenkins hash of those, and a checksum that mixes
+// in where the header is: the low 2 bits of the archive number and its offset. The checksum's bytes line up with the
+// header's position in the file, so a header at an offset that isn't a multiple of 4 has them rotated.
+func entryHeader(k tact.Key, size uint32, archive int, offset int64) []byte {
+	return entryHeaderFlags(k, size, archive, offset, [2]byte{})
+}
+
+func entryHeaderFlags(k tact.Key, size uint32, archive int, offset int64, flags [2]byte) []byte {
 	head := make([]byte, 0, headerLen)
 	for i := 15; i >= 0; i-- {
 		head = append(head, k[i])
 	}
 	head = binary.LittleEndian.AppendUint32(head, size)
-	head = append(head, 0, 0)
+	head = append(head, flags[0], flags[1])
 	head = binary.LittleEndian.AppendUint32(head, hashlittle(head, 0x3d6be971))
-	v := uint32(offset + headerLen)
+	return append(head, checksumB(head, archive, offset)...)
+}
+
+// checksumB is the header's last 4 bytes, from its first 26.
+func checksumB(head []byte, archive int, offset int64) []byte {
+	pos := uint32(archive&3)<<30 | uint32(offset)&(archiveLimit-1)
+	v := pos + headerLen
 	var encoded [4]byte
 	binary.LittleEndian.PutUint32(encoded[:], offsetTable[v&0xf]^v)
 	var hashed [4]byte
-	for i, b := range head {
-		hashed[i&3] ^= b
+	for i := 0; i < headerLen-4; i++ {
+		hashed[(uint32(i)+pos)&3] ^= head[i]
 	}
-	n := len(head)
+	out := make([]byte, 4)
 	for j := 0; j < 4; j++ {
-		i := (n + j) & 3
-		head = append(head, hashed[i]^encoded[i])
+		i := (uint32(j) + headerLen - 4 + pos) & 3
+		out[j] = hashed[i] ^ encoded[i]
 	}
-	return head
+	return out
+}
+
+// --- segment headers -----------------------------------------------------------------------------------------------
+//
+// Every archive Blizzard's installer makes starts with 16 empty stored files of 30 bytes, one per key table: the one at
+// offset 30*b is listed in key table b, under a key whose bucket is b-1 (the "cross reference" bucket). Their flags
+// are 1,0. The client checks them when it opens the storage; build 1.60.1.70959 refuses a storage where they're
+// missing ("Missing segment header for archive '0', repair needed"). Launchers up to v0.1.2-alpha.5 wrote archives
+// without them.
+
+const segmentLen = 16 * headerLen
+
+// segmentSalt fills key bytes 2-8. Blizzard's installer takes them from an MD5 of the computer's name and "data/data";
+// the client only needs them to name the archive's own records.
+var segmentSalt = [7]byte{0x45, 0x56, 0x45, 0x52, 0x4c, 0x41, 0x4b} // "EVERLAK"
+
+// segmentKey is the key of archive n's record for key table b.
+func segmentKey(n, b int) tact.Key {
+	var k tact.Key
+	k[1] = byte(n)
+	copy(k[2:9], segmentSalt[:])
+	want := (b + 15) % 16
+	for x := 0; x < 256; x++ {
+		k[0] = byte(x)
+		if Bucket(short(k)) == want {
+			break
+		}
+	}
+	return k
+}
+
+// segmentHeader is the first 480 bytes of archive n.
+func segmentHeader(n int) []byte {
+	out := make([]byte, 0, segmentLen)
+	for b := 0; b < 16; b++ {
+		out = append(out, entryHeaderFlags(segmentKey(n, b), headerLen, n, int64(b*headerLen), [2]byte{1, 0})...)
+	}
+	return out
+}
+
+// isSegment says whether an entry in key table b is an archive's own record for that table.
+func isSegment(b int, l Loc) bool {
+	return l.Offset == int64(b*headerLen) && l.Size == headerLen
+}
+
+// validSegment checks the first 480 bytes of archive n: 16 records of 30 bytes with good checksums, flags 1,0, each in
+// the cross-reference bucket of its slot. It returns their keys' first 9 bytes.
+func validSegment(n int, head []byte) ([16]ShortKey, bool) {
+	var keys [16]ShortKey
+	if len(head) < segmentLen {
+		return keys, false
+	}
+	for b := 0; b < 16; b++ {
+		e := head[b*headerLen : (b+1)*headerLen]
+		if binary.LittleEndian.Uint32(e[16:]) != headerLen || e[20] != 1 || e[21] != 0 ||
+			binary.LittleEndian.Uint32(e[22:]) != hashlittle(e[:22], 0x3d6be971) ||
+			!bytes.Equal(checksumB(e, n, int64(b*headerLen)), e[26:30]) {
+			return keys, false
+		}
+		for i := 0; i < keyLen; i++ {
+			keys[b][i] = e[15-i]
+		}
+		if Bucket(keys[b]) != (b+15)%16 {
+			return keys, false
+		}
+	}
+	return keys, true
+}
+
+// addSegmentEntries lists archive n's records in the key tables, and says whether any was missing. Callers hold s.mu.
+func (s *Storage) addSegmentEntries(n int, keys [16]ShortKey) bool {
+	added := false
+	for b := 0; b < 16; b++ {
+		l := Loc{Archive: n, Offset: int64(b * headerLen), Size: headerLen}
+		if old, ok := s.buckets[b].entries[keys[b]]; ok && old == l {
+			continue
+		}
+		s.buckets[b].entries[keys[b]] = l
+		s.buckets[b].dirty = true
+		added = true
+	}
+	return added
+}
+
+// dropSegmentEntries removes archive n's records from the key tables (the archive is going away). Callers hold s.mu.
+func (s *Storage) dropSegmentEntries(n int) {
+	for b, bf := range s.buckets {
+		for k, l := range bf.entries {
+			if l.Archive == n && isSegment(b, l) {
+				delete(bf.entries, k)
+				bf.dirty = true
+			}
+		}
+	}
+}
+
+// usedArchives is every archive a stored file is in; an archive's own records don't count. Callers hold s.mu.
+func (s *Storage) usedArchives() map[int]bool {
+	used := map[int]bool{}
+	for b, bf := range s.buckets {
+		for _, l := range bf.entries {
+			if !isSegment(b, l) {
+				used[l.Archive] = true
+			}
+		}
+	}
+	return used
+}
+
+// SegmentProblems lists archives whose segment header is missing or not listed in the key tables.
+func (s *Storage) SegmentProblems() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, n := range s.sortedArchives() {
+		head, err := s.readHead(n)
+		if err != nil {
+			out = append(out, fmt.Sprintf("%s (%v)", s.archivePath(n), err))
+			continue
+		}
+		keys, ok := validSegment(n, head)
+		if !ok {
+			out = append(out, fmt.Sprintf("%s (no segment header)", s.archivePath(n)))
+			continue
+		}
+		for b := 0; b < 16; b++ {
+			if l, ok := s.buckets[b].entries[keys[b]]; !ok || l != (Loc{Archive: n, Offset: int64(b * headerLen), Size: headerLen}) {
+				out = append(out, fmt.Sprintf("%s (segment header not listed in key table %02x)", s.archivePath(n), b))
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (s *Storage) sortedArchives() []int {
+	var list []int
+	for n := range s.archives {
+		if _, err := os.Stat(s.archivePath(n)); err == nil {
+			list = append(list, n)
+		}
+	}
+	sort.Ints(list)
+	return list
+}
+
+// readHead reads the first 480 bytes of archive n (fewer if the file is shorter). Callers hold s.mu.
+func (s *Storage) readHead(n int) ([]byte, error) {
+	f, err := s.reader(n)
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, segmentLen)
+	got, err := f.ReadAt(buf, 0)
+	if got < segmentLen && err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buf[:got], nil
+}
+
+// MendSegments gives every archive this package made a segment header, and lists every archive's header in the key
+// tables. An archive whose first 480 bytes hold stored files has those files copied to the archive being written
+// first (their entries then point there), then the header is written over them. Archives the client made are only
+// listed, never written. It returns the archives it changed.
+func (s *Storage) MendSegments() ([]string, error) {
+	if s.readOnly {
+		return nil, errors.New("local storage is open read-only")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	own := map[int]bool{}
+	for _, n := range s.own {
+		own[n] = true
+	}
+	var changed []string
+	for _, n := range s.sortedArchives() {
+		if s.w != nil && n == s.wNum {
+			continue // made by roll, with its header
+		}
+		head, err := s.readHead(n)
+		if err != nil {
+			return changed, err
+		}
+		if keys, ok := validSegment(n, head); ok {
+			if s.addSegmentEntries(n, keys) {
+				changed = append(changed, fmt.Sprintf("data.%03d (header listed in the key tables again)", n))
+			}
+			continue
+		}
+		if !own[n] {
+			continue
+		}
+		moved, err := s.moveFront(n)
+		if err != nil {
+			return changed, fmt.Errorf("data.%03d: %w", n, err)
+		}
+		// The moved copies and their entries must be on disk before the old bytes are overwritten.
+		if err := s.flush(); err != nil {
+			return changed, err
+		}
+		f, err := os.OpenFile(s.archivePath(n), os.O_RDWR, 0)
+		if err != nil {
+			return changed, err
+		}
+		_, err = f.WriteAt(segmentHeader(n), 0)
+		if e := f.Sync(); err == nil {
+			err = e
+		}
+		if e := f.Close(); err == nil {
+			err = e
+		}
+		if err != nil {
+			return changed, err
+		}
+		if r := s.readers[n]; r != nil { // reopen on next read
+			r.Close()
+			delete(s.readers, n)
+		}
+		var keys [16]ShortKey
+		for b := 0; b < 16; b++ {
+			keys[b] = short(segmentKey(n, b))
+		}
+		s.addSegmentEntries(n, keys)
+		changed = append(changed, fmt.Sprintf("data.%03d (header written, %d files moved)", n, moved))
+	}
+	return changed, s.flush()
+}
+
+// moveFront copies the stored files that overlap archive n's first 480 bytes to the archive being written, and
+// points their entries there. Callers hold s.mu.
+func (s *Storage) moveFront(n int) (int, error) {
+	f, err := s.reader(n)
+	if err != nil {
+		return 0, err
+	}
+	type item struct {
+		b   int
+		k   ShortKey
+		loc Loc
+	}
+	var items []item
+	for b, bf := range s.buckets {
+		for k, l := range bf.entries {
+			if l.Archive == n && l.Offset < segmentLen {
+				items = append(items, item{b, k, l})
+			}
+		}
+	}
+	for _, it := range items {
+		if it.loc.Size < headerLen || int64(it.loc.Size) > archiveLimit {
+			delete(s.buckets[it.b].entries, it.k) // nothing sensible to keep; an install fetches it again
+			s.buckets[it.b].dirty = true
+			continue
+		}
+		buf := make([]byte, it.loc.Size)
+		if _, err := f.ReadAt(buf, it.loc.Offset); err != nil {
+			delete(s.buckets[it.b].entries, it.k)
+			s.buckets[it.b].dirty = true
+			continue
+		}
+		var k tact.Key
+		for i := 0; i < 16; i++ {
+			k[i] = buf[15-i]
+		}
+		if short(k) != it.k {
+			delete(s.buckets[it.b].entries, it.k)
+			s.buckets[it.b].dirty = true
+			continue
+		}
+		if s.w == nil || s.wOff+int64(it.loc.Size) > s.limit {
+			if err := s.roll(); err != nil {
+				return 0, err
+			}
+		}
+		out := append(entryHeader(k, it.loc.Size, s.wNum, s.wOff), buf[headerLen:]...)
+		if _, err := s.w.WriteAt(out, s.wOff); err != nil {
+			return 0, err
+		}
+		s.buckets[it.b].entries[it.k] = Loc{Archive: s.wNum, Offset: s.wOff, Size: it.loc.Size}
+		s.buckets[it.b].dirty = true
+		s.wOff += int64(it.loc.Size)
+	}
+	return len(items), nil
 }
 
 // WriteFile writes a file through a temporary file and a rename, so a cut-off run never leaves a half file under

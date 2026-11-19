@@ -291,6 +291,24 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 			opts.Log("a key table's update area is damaged and is written again (a copy is in .everlake/bad-index): %s", b)
 		}
 	}
+	// Every archive starts with 16 records the client checks (its "segment header"); launchers up to v0.1.2-alpha.5
+	// left them out, which build 1.60.1.70959 refuses ("Missing segment header for archive '0', repair needed").
+	if opts.Verify {
+		for _, p := range r.st.SegmentProblems() {
+			r.problem(p, true)
+		}
+		if _, err := os.Stat(filepath.Join(dataDir, repairMarker)); err == nil {
+			r.problem(filepath.Join(dataDir, repairMarker)+" (the game marked its storage for repair)", true)
+		}
+	} else {
+		changed, err := r.st.MendSegments()
+		if err != nil {
+			return nil, fmt.Errorf("local storage: archive headers: %w", err)
+		}
+		for _, c := range changed {
+			opts.Log("archive header repaired: %s", c)
+		}
+	}
 	if err := r.moveStaged(); err != nil {
 		return nil, fmt.Errorf("moving staged files into local storage: %w", err)
 	}
@@ -391,6 +409,13 @@ func (r *run) do(ctx context.Context) (*Report, error) {
 			r.rep.Reclaimed += reclaimed
 		}
 		if err := r.writeState(); err != nil {
+			return nil, err
+		}
+		// The game leaves this when it finds its storage damaged and won't start while it's there. The storage has
+		// just been checked and mended, so it goes.
+		if err := os.Remove(filepath.Join(dataDir, repairMarker)); err == nil {
+			opts.Log("removed the game's repair marker (%s)", repairMarker)
+		} else if !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
@@ -1346,12 +1371,16 @@ func QuickVerify(dir string) (*Report, error) {
 	if s, err := casc.OpenReadOnly(filepath.Join(dir, "Data", "data")); err == nil {
 		rep.Bad = append(rep.Bad, s.Bad()...)
 		rep.Bad = append(rep.Bad, s.Mended()...)
+		rep.Bad = append(rep.Bad, s.SegmentProblems()...)
 		s.Close()
 	}
 	sort.Strings(rep.Bad)
 	sort.Strings(rep.Missing)
 	return rep, nil
 }
+
+// repairMarker is the file the game writes into Data/data when it finds its storage damaged.
+const repairMarker = "RepairMarker.psv"
 
 // ReadState reads what the last complete install recorded, if any.
 func ReadState(dir string) (*State, error) {
