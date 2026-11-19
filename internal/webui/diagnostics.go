@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -72,7 +73,11 @@ func writeDiagnostics(bundle *zip.Writer, dir, launcherVersion, build, history s
 	fmt.Fprintf(inventory, "Collected: %s\nLauncher: %s\nBuild: %s\nInstall: %s\n\n",
 		time.Now().Format(time.RFC3339), launcherVersion, build, dir)
 	fmt.Fprintln(inventory, "Files in log and error directories (local time, bytes, path):")
-	var clientLogs []string
+	type logFile struct {
+		rel string
+		mod time.Time
+	}
+	var clientLogs []logFile
 	err = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			fmt.Fprintln(inventory, walkErr)
@@ -99,9 +104,8 @@ func writeDiagnostics(bundle *zip.Writer, dir, launcherVersion, build, history s
 			return err
 		}
 		if info.Mode().IsRegular() && parent == "logs" &&
-			strings.EqualFold(filepath.Ext(rel), ".log") && !strings.EqualFold(entry.Name(), "catalog.log") &&
-			len(clientLogs) < 20 {
-			clientLogs = append(clientLogs, rel)
+			strings.EqualFold(filepath.Ext(rel), ".log") && !strings.EqualFold(entry.Name(), "catalog.log") {
+			clientLogs = append(clientLogs, logFile{rel, info.ModTime()})
 		}
 		_, err = fmt.Fprintf(inventory, "%s\t%d\t%s\n", info.ModTime().Format(time.RFC3339), info.Size(), rel)
 		return err
@@ -110,7 +114,17 @@ func writeDiagnostics(bundle *zip.Writer, dir, launcherVersion, build, history s
 		return err
 	}
 
-	for _, relative := range append(clientLogs,
+	// The newest logs are the ones about the problem being reported. Walk order would put Classic\ (an older,
+	// separate client) before _forever_\ and fill the bundle with its logs.
+	sort.SliceStable(clientLogs, func(i, j int) bool { return clientLogs[i].mod.After(clientLogs[j].mod) })
+	if len(clientLogs) > maxClientLogs {
+		clientLogs = clientLogs[:maxClientLogs]
+	}
+	picked := make([]string, 0, len(clientLogs)+2)
+	for _, l := range clientLogs {
+		picked = append(picked, l.rel)
+	}
+	for _, relative := range append(picked,
 		filepath.Join("_era_", "logs", "catalog.log"),
 		filepath.Join("_era_", "logs", "missing-files.tsv"),
 	) {
@@ -136,6 +150,18 @@ func addDiagnosticFile(bundle *zip.Writer, name, path string) error {
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(entry, io.LimitReader(file, 4<<20))
+	// A log longer than the limit keeps its end: the latest lines are the ones about the problem.
+	if info, err := file.Stat(); err == nil && info.Size() > maxDiagnosticFile {
+		if _, err := file.Seek(info.Size()-maxDiagnosticFile, io.SeekStart); err != nil {
+			return err
+		}
+		fmt.Fprintf(entry, "[first %d bytes left out]\n", info.Size()-maxDiagnosticFile)
+	}
+	_, err = io.Copy(entry, io.LimitReader(file, maxDiagnosticFile))
 	return err
 }
+
+const (
+	maxClientLogs     = 20      // game log files in a bundle, newest first
+	maxDiagnosticFile = 4 << 20 // bytes kept of each file
+)
