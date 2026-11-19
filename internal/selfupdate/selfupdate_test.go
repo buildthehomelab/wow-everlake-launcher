@@ -30,6 +30,7 @@ func TestNewer(t *testing.T) {
 		{"v0.1.2-alpha.3", "v0.1.2-alpha.2", true},
 		{"v0.1.2-alpha.4", "v0.1.2-alpha.3", true},
 		{"v0.1.2-alpha.5", "v0.1.2-alpha.4", true},
+		{"v0.1.2-alpha.6", "v0.1.2-alpha.5", true},
 		// a Windows test build sorts above every plain alpha of its own version, so the release after it bumps the patch
 		{"v0.1.1-alpha.3", "v0.1.1-alpha.2-windows-test.1", false},
 		{"v0.1.1-alpha.1", "v0.1.1-alpha.2-windows-test.1", false},
