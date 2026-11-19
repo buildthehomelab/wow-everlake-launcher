@@ -200,3 +200,87 @@ func TestFindPortal(t *testing.T) {
 		t.Error("found a portal in an empty image")
 	}
 }
+
+func TestScanCopiesCountsEveryCopyOnce(t *testing.T) {
+	kp, _ := NewKeyPatcher(StockServerKey, DefaultRegionGroup)
+	// Bigger than one scan chunk, so a copy can straddle the chunk boundary.
+	mem := &fakeMem{base: 0x100000, data: make([]byte, chunk+4096), alive: true}
+	k8, _ := hex.DecodeString(knownKeys[7])
+	k3, _ := hex.DecodeString(knownKeys[2])
+	ours, _ := hex.DecodeString(StockServerKey)
+	for _, at := range []int{0x11, chunk - 50, chunk - 10} { // unaligned, last full one in chunk 1, straddling
+		copy(mem.data[at:], k8)
+	}
+	copy(mem.data[0x200:], k3)
+	copy(mem.data[chunk+100:], ours)
+	c := kp.scanCopies(mem)
+	if c.counts[7] != 3 || c.counts[2] != 1 || c.ours != 1 || len(c.group) != 3 {
+		t.Fatalf("counts %v ours %d group %x", c.counts, c.ours, c.group)
+	}
+	for _, i := range []int{0, 1, 3, 4, 5, 6, 8, 9, 10, 11} {
+		if c.counts[i] != 0 {
+			t.Errorf("key %d counted %d times", i+1, c.counts[i])
+		}
+	}
+}
+
+func TestWatchFallbackWritesLooseCopies(t *testing.T) {
+	saved, savedDiag := fallbackAfter, diagEvery
+	fallbackAfter, diagEvery = 300*time.Millisecond, 50*time.Millisecond
+	defer func() { fallbackAfter, diagEvery = saved, savedDiag }()
+
+	kp, _ := NewKeyPatcher(StockServerKey, DefaultRegionGroup)
+	mem := &fakeMem{base: 0x40000, data: make([]byte, 32<<10), alive: true}
+	k8, _ := hex.DecodeString(knownKeys[7])
+	k1, _ := hex.DecodeString(knownKeys[0])
+	ours, _ := hex.DecodeString(StockServerKey)
+	// No 480-byte table: the keys sit in some other layout, with key 8 twice.
+	copy(mem.data[0x100:], k1)
+	copy(mem.data[0x123:], k8)
+	copy(mem.data[0x900:], k8)
+	var mu sync.Mutex
+	var logs []string
+	readies := 0
+	done := make(chan struct{})
+	go func() {
+		kp.Watch(mem, func(s string) { mu.Lock(); logs = append(logs, s); mu.Unlock() },
+			func() { mu.Lock(); readies++; mu.Unlock() }, nil)
+		close(done)
+	}()
+	written := func(at int) bool { return bytes.Equal(mem.Read(mem.base+uint64(at), 32), ours) }
+	end := time.Now().Add(10 * time.Second)
+	for time.Now().Before(end) && !(written(0x123) && written(0x900)) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !written(0x123) || !written(0x900) {
+		t.Fatal("backup mode never wrote the copies")
+	}
+	if !bytes.Equal(mem.Read(mem.base+0x100, 32), k1) {
+		t.Error("key 1 was changed")
+	}
+	// A copy the game makes later is written too.
+	mem.Write(mem.base+0x2000, k8)
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end) && !written(0x2000); time.Sleep(20 * time.Millisecond) {
+	}
+	if !written(0x2000) {
+		t.Error("a later copy was not written")
+	}
+	mem.mu.Lock()
+	mem.alive = false
+	mem.mu.Unlock()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if readies != 1 {
+		t.Errorf("ready called %d times, want 1", readies)
+	}
+	joined := ""
+	for _, l := range logs {
+		joined += l + "\n"
+	}
+	for _, want := range []string{"built-in key copies (entries 1-12): 1 0 0 0 0 0 0 2 0 0 0 0", "backup mode wrote the server key over 2 of 2"} {
+		if !bytes.Contains([]byte(joined), []byte(want)) {
+			t.Errorf("log lacks %q:\n%s", want, joined)
+		}
+	}
+}

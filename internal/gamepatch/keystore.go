@@ -185,6 +185,94 @@ func (k *KeyPatcher) patch(m Memory, array uint64) error {
 	return fmt.Errorf("the key store changed while writing")
 }
 
+// copyScan is one pass over the game's writable memory for every copy of the 12 built-in keys.
+type copyScan struct {
+	counts [count]int // copies of each built-in key, entry 1 first
+	ours   int        // copies of the server's key
+	group  []uint64   // addresses of the copies of our region group's built-in key
+}
+
+func (c copyScan) String() string {
+	var b bytes.Buffer
+	for i, n := range c.counts {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		fmt.Fprintf(&b, "%d", n)
+	}
+	return fmt.Sprintf("built-in key copies (entries 1-12): %s; server key copies: %d", b.String(), c.ours)
+}
+
+// scanCopies finds every copy of the built-in keys and of the server key, at any alignment. 70959 does not always keep
+// the keys in the 480-byte table on every PC (Karrz1/Karrz-playerbots-wow-forever 0.1.38.1, error 1016 at login), so
+// this shows where they are, and gives the copies of our group's key for the fallback.
+func (k *KeyPatcher) scanCopies(m Memory) copyScan {
+	var c copyScan
+	for _, r := range m.Regions() {
+		for off := r[0]; off < r[1]; off += chunk - 31 {
+			take := uint64(chunk)
+			if r[1]-off < take {
+				take = r[1] - off
+			}
+			if k.buf == nil {
+				k.buf = make([]byte, chunk)
+			}
+			buf := m.ReadInto(off, k.buf[:take])
+			// a copy that starts in the 31-byte overlap is counted by the next chunk, not this one
+			limit := len(buf)
+			if take == chunk {
+				limit = len(buf) - 31
+			}
+			find := func(needle []byte, hit func(uint64)) {
+				for i := 0; ; {
+					j := bytes.Index(buf[i:], needle)
+					if j < 0 || i+j >= limit {
+						return
+					}
+					hit(off + uint64(i+j))
+					i += j + 1
+				}
+			}
+			for e := range k.keys {
+				e := e
+				find(k.keys[e][:], func(a uint64) {
+					c.counts[e]++
+					if e == k.group-1 {
+						c.group = append(c.group, a)
+					}
+				})
+			}
+			find(k.newKey[:], func(uint64) { c.ours++ })
+			if take < chunk {
+				break
+			}
+		}
+	}
+	return c
+}
+
+// patchCopies writes the server key over every copy of our group's built-in key (the fallback when no key table is
+// found). It writes only memory the game already has writable, like the table write; it returns how many stuck.
+func (k *KeyPatcher) patchCopies(m Memory, addrs []uint64) int {
+	n := 0
+	for _, a := range addrs {
+		if !bytes.Equal(m.Read(a, 32), k.keys[k.group-1][:]) {
+			continue
+		}
+		if m.Write(a, k.newKey[:]) && bytes.Equal(m.Read(a, 32), k.newKey[:]) {
+			n++
+		}
+	}
+	return n
+}
+
+// fallbackAfter is how long copies of our group's key must be in memory with no key table before the fallback writes
+// over the copies. The table shows up within a second of login when the game builds one.
+var fallbackAfter = 20 * time.Second
+
+// diagEvery is how often, while no key table is found, the copies are counted and logged (when they change).
+var diagEvery = 10 * time.Second
+
 // Watch keeps the server key in the client's key store until the game closes. The store only exists once the game
 // starts connecting to a realm, and the game may free and rebuild it, so it searches again whenever it goes away.
 // ready, if set, is called each time the key is in place (the player has logged in); gone, if set, each time the
@@ -196,6 +284,15 @@ func (k *KeyPatcher) patch(m Memory, array uint64) error {
 func (k *KeyPatcher) Watch(m Memory, log func(string), ready, gone func()) {
 	var at uint64
 	saidWaiting := false
+	var lastDiag, groupSeen time.Time
+	lastCopies := ""
+	fallback := false // the server key went over loose copies (no key table)
+	diag := func(c copyScan) {
+		if s := c.String(); s != lastCopies {
+			log("server key: " + s)
+			lastCopies = s
+		}
+	}
 	for m.Alive() {
 		if at != 0 {
 			switch k.state(m, at) {
@@ -233,7 +330,9 @@ func (k *KeyPatcher) Watch(m Memory, log func(string), ready, gone func()) {
 				continue
 			}
 			log(fmt.Sprintf("server key: written (region group %d)", k.group))
+			diag(k.scanCopies(m))
 			at = stores[0].addr
+			fallback = false
 			if ready != nil {
 				ready()
 			}
@@ -241,6 +340,33 @@ func (k *KeyPatcher) Watch(m Memory, log func(string), ready, gone func()) {
 			if !saidWaiting {
 				log("server key: waiting for the game to open its key store (it does when you log in)")
 				saidWaiting = true
+			}
+			if fallback || time.Since(lastDiag) >= diagEvery {
+				lastDiag = time.Now()
+				c := k.scanCopies(m)
+				diag(c)
+				switch {
+				case len(c.group) == 0:
+					groupSeen = time.Time{}
+				case groupSeen.IsZero():
+					groupSeen = time.Now()
+				case fallback || time.Since(groupSeen) >= fallbackAfter:
+					n := k.patchCopies(m, c.group)
+					if !fallback {
+						log(fmt.Sprintf("server key: no key table after %s; backup mode wrote the server key over %d of %d copies of region group %d's key",
+							fallbackAfter, n, len(c.group), k.group))
+						fallback = true
+						if ready != nil {
+							ready()
+						}
+					} else if n > 0 {
+						log(fmt.Sprintf("server key: backup mode wrote %d new copies", n))
+					}
+				}
+				if fallback {
+					time.Sleep(2 * time.Second)
+					continue
+				}
 			}
 			time.Sleep(150 * time.Millisecond)
 		default:
