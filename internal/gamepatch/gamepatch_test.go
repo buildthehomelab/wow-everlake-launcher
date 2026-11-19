@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -282,5 +284,24 @@ func TestWatchFallbackWritesLooseCopies(t *testing.T) {
 		if !bytes.Contains([]byte(joined), []byte(want)) {
 			t.Errorf("log lacks %q:\n%s", want, joined)
 		}
+	}
+}
+
+func TestKeyLogAppendsToInstallFolder(t *testing.T) {
+	install := t.TempDir()
+	game := filepath.Join(install, "_forever_")
+	if err := os.MkdirAll(filepath.Join(install, ".everlake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	log := keyLog(Options{Dir: game, Log: func(s string) { seen = append(seen, s) }})
+	log("server key: one")
+	log("server key: two")
+	b, err := os.ReadFile(filepath.Join(install, KeyLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte("server key: one\n")) || !bytes.Contains(b, []byte("server key: two\n")) || len(seen) != 2 {
+		t.Fatalf("file %q, window %v", b, seen)
 	}
 }

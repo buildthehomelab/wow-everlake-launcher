@@ -63,7 +63,7 @@ func Launch(o Options) (*Game, error) {
 		close(done)
 	}()
 	go func() {
-		kp.Watch(proc, o.Log, pc.loggedIn, pc.loggedOut)
+		kp.Watch(proc, keyLog(o), pc.loggedIn, pc.loggedOut)
 		<-done
 		users.Wait()
 		proc.Close()

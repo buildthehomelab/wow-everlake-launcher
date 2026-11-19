@@ -127,6 +127,7 @@ func writeDiagnostics(bundle *zip.Writer, dir, launcherVersion, build, history s
 	for _, relative := range append(picked,
 		filepath.Join("_era_", "logs", "catalog.log"),
 		filepath.Join("_era_", "logs", "missing-files.tsv"),
+		filepath.Join(".everlake", "server-key.log"),
 	) {
 		source := filepath.Join(dir, relative)
 		info, err := os.Lstat(source)

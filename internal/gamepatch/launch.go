@@ -2,6 +2,9 @@ package gamepatch
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -46,5 +49,26 @@ func (o *Options) defaults() {
 	}
 	if o.Log == nil {
 		o.Log = func(string) {}
+	}
+}
+
+// KeyLogName is where the server key lines also go, under the install folder (the game folder's parent), so they
+// outlive the launcher window and come with Save diagnostics.
+var KeyLogName = filepath.Join(".everlake", "server-key.log")
+
+// keyLog sends a line to o.Log and appends it, with the time, to KeyLogName.
+func keyLog(o Options) func(string) {
+	path := filepath.Join(filepath.Dir(o.Dir), KeyLogName)
+	return func(line string) {
+		if o.Log != nil {
+			o.Log(line)
+		}
+		if o.Dir == "" {
+			return
+		}
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), line)
+			f.Close()
+		}
 	}
 }
