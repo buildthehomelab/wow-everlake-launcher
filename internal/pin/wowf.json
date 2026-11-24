@@ -1,13 +1,13 @@
 {
   "product": "wowf",
   "region": "us",
-  "version": "1.60.1.70959",
-  "build_id": 70959,
-  "build_config": "ad887adcf63b8746155dd40e1930b80f",
-  "cdn_config": "4831465d4b6a7db3302338ab0f1ac231",
+  "version": "1.60.1.71091",
+  "build_id": 71091,
+  "build_config": "3cd52a7a64f9bad078020b1e95af8a00",
+  "cdn_config": "651a4e9b0149724f49856404b405355e",
   "cdn_path": "tpr/wow",
   "cdn_hosts": ["level3.blizzard.com", "us.cdn.blizzard.com"],
   "game_folder": "_forever_",
   "flavor": "wowf",
-  "note": "Blizzard's live build since 2026-11-17. The realm must accept it (wow-project-everlake ALSO_ACCEPT_BUILDS with 70959, and a core with the 70959 build_info row: Karrz 0.1.37.6, core PR #91). Change it only together with the core, and add the build it replaces to earlier in pin.go."
+  "note": "Blizzard's live build since 2026-11-24 (same game data as 71037). The realm must accept it (wow-project-everlake ALSO_ACCEPT_BUILDS with 71091, and a core with the 71091 build_info row: core PR #143). Change it only together with the core, and add the build it replaces to earlier in pin.go."
 }
