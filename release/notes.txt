@@ -1,9 +1,7 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-Makes joining a realm with game build 1.60.1.70959 work on more PCs. When you log in, the launcher puts the realm's key into a table the game keeps in memory. On some PCs, build 70959 does not build that table, so the launcher had nowhere to write the key and the realm login failed. If no table turns up within 20 seconds of the key appearing in memory, the launcher now writes the realm's key over every copy of the key the realm needs, and keeps doing so for copies the game makes later. On PCs where the game builds the table, nothing changes.
+Moves the game to WoW Forever 1.60.1.71091, Blizzard's update of 24 November 2026 (the realms are on 71091 now). Install and Verify update a client on 70959 or an earlier build in place; only the files that changed are downloaded. Nothing is forced: a client you don't update keeps working while the realms still let its build in.
 
-The launcher also writes its "server key" lines to .everlake\server-key.log in the install folder, and Save diagnostics includes that file, so a report shows how the key was handled even after the launcher was closed and opened again.
-
-Validation: Windows, Linux and macOS test suites. On a Windows PC with build 70959, a test build of this change joined the realm and entered the world; that PC builds the table, so it took the normal path. The new backup mode has not yet been seen on a PC that needs it.
+Validation: Windows, Linux and macOS test suites. On 71091's real Windows Wow.exe, the launcher still finds the table it writes the realm's key into (one entry, in .data). A 71091 client joined the test realm. Playing on 71091 with this launcher build has not been seen yet.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
