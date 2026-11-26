@@ -254,9 +254,6 @@ end
 -- The client's side tabs (ProfessionsFrame, 1.60): a 55x54 frame with atlas common-sidetab behind a 50x50 icon,
 -- common-sidetab-selected over the open profession, common-sidetab-hover on mouse-over. Ours are built the same way.
 local SIDETAB_W, SIDETAB_H, SIDETAB_ART_H, SIDETAB_ICON = 55, 54, 59, 50
-local function HasAtlas(name)
-    return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil
-end
 
 local function Tab(window, i)
     tabs[window] = tabs[window] or {}
@@ -266,7 +263,6 @@ local function Tab(window, i)
     t.everlakeTab = true
     t:SetSize(SIDETAB_W, SIDETAB_H)
     t:RegisterForClicks("AnyUp", "AnyDown")
-    local atlas = HasAtlas("common-sidetab")
     t.back = t:CreateTexture(nil, "BACKGROUND")
     t.back:SetPoint("CENTER")
     t.back:SetSize(SIDETAB_W, SIDETAB_ART_H)
@@ -277,8 +273,8 @@ local function Tab(window, i)
     t.selected:SetPoint("CENTER")
     t.selected:SetSize(SIDETAB_W, SIDETAB_ART_H)
     t.selected:Hide()
-    if atlas then
-        t.back:SetAtlas("common-sidetab")
+    -- SetAtlas answers false for an atlas the client lacks (C_Texture.GetAtlasInfo found nothing on 1.60 for these)
+    if t.back:SetAtlas("common-sidetab") ~= false then
         t.selected:SetAtlas("common-sidetab-selected")
         t:SetHighlightAtlas("common-sidetab-hover", "ADD")
         local hl = t:GetHighlightTexture()
