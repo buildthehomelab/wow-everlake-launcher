@@ -73,7 +73,7 @@ local function KnownProfessions()
                 cast = SpellNameIcon(p.open)
             end
             local rank, maxRank = SkillRank(p.skill, name)
-            list[#list + 1] = { name = name or "?", icon = icon, cast = cast, rank = rank, maxRank = maxRank }
+            list[#list + 1] = { name = name or "?", icon = icon, cast = cast, rank = rank, maxRank = maxRank, skill = p.skill }
         end
     end
     return list
@@ -227,79 +227,6 @@ local function ColumnHas(described, p)
     end
 end
 
--- Our tab wears the client tab's frame: every texture of the model tab and of its child frames, except its icon,
--- copied with atlas or texture, coords, layer, size and place; and its pushed, checked and highlight textures.
-local function CopyTexture(region, onto, model, t)
-    local copy = onto:CreateTexture(nil, region:GetDrawLayer())
-    local atlas = region.GetAtlas and region:GetAtlas()
-    if atlas then
-        copy:SetAtlas(atlas)
-    else
-        copy:SetTexture(region:GetTexture())
-        copy:SetTexCoord(region:GetTexCoord())
-    end
-    copy:SetBlendMode(region:GetBlendMode())
-    copy:SetVertexColor(region:GetVertexColor())
-    copy:SetSize(region:GetSize())
-    for i = 1, region:GetNumPoints() do
-        local point, relative, relativePoint, x, y = region:GetPoint(i)
-        copy:SetPoint(point, (relative == model or not relative) and t or relative, relativePoint, x, y)
-    end
-    if region:GetNumPoints() == 0 then copy:SetAllPoints(t) end
-    if not region:IsShown() then copy:Hide() end
-    return copy
-end
-
-local function CopyButtonTexture(model, t, getter, setter)
-    local tex = model[getter] and model[getter](model)
-    if not tex then return end
-    local atlas = tex.GetAtlas and tex:GetAtlas()
-    if atlas then
-        t[setter](t, atlas)
-    elseif tex:GetTexture() then
-        t[setter](t, tex:GetTexture())
-        local mine = t[getter](t)
-        if mine then mine:SetTexCoord(tex:GetTexCoord()) end
-    end
-end
-
-local function CopyFrame(model, t)
-    if t.framed == model then return end
-    t.framed = model
-    local icon = model.GetNormalTexture and model:GetNormalTexture()
-    local skip = {}
-    if icon then skip[icon] = true end
-    for _, getter in ipairs({ "GetPushedTexture", "GetCheckedTexture", "GetHighlightTexture", "GetDisabledTexture" }) do
-        local tex = model[getter] and model[getter](model)
-        if tex then skip[tex] = true end
-    end
-    local function copyRegions(frame, onto)
-        for _, region in ipairs({ frame:GetRegions() }) do
-            if region:GetObjectType() == "Texture" and not skip[region] then CopyTexture(region, onto, model, t) end
-        end
-    end
-    copyRegions(model, t)
-    for _, child in ipairs({ model:GetChildren() }) do   -- a frame drawn on top, as some tab templates have
-        local holder = CreateFrame("Frame", nil, t)
-        holder:SetAllPoints(t)
-        holder:SetFrameLevel(t:GetFrameLevel() + 1)
-        copyRegions(child, holder)
-    end
-    CopyButtonTexture(model, t, "GetPushedTexture", "SetPushedTexture")
-    CopyButtonTexture(model, t, "GetHighlightTexture", "SetHighlightTexture")
-    if t.border then t.border:Hide() end
-    if icon then
-        t.icon:ClearAllPoints()
-        for i = 1, icon:GetNumPoints() do
-            local point, relative, relativePoint, x, y = icon:GetPoint(i)
-            t.icon:SetPoint(point, (relative == model or not relative) and t or relative, relativePoint, x, y)
-        end
-        if icon:GetNumPoints() == 0 then t.icon:SetAllPoints() end
-        t.icon:SetDrawLayer(icon:GetDrawLayer())
-        t.icon:SetTexCoord(icon:GetTexCoord())
-    end
-end
-
 -- /everlake prof frame: what a client tab is made of, to match its look
 local function DumpTab(tab)
     local function tex(r)
@@ -324,33 +251,60 @@ local function DumpTab(tab)
     end
 end
 
+-- The client's side tabs (ProfessionsFrame, 1.60): a 55x54 frame with atlas common-sidetab behind a 50x50 icon,
+-- common-sidetab-selected over the open profession, common-sidetab-hover on mouse-over. Ours are built the same way.
+local SIDETAB_W, SIDETAB_H, SIDETAB_ART_H, SIDETAB_ICON = 55, 54, 59, 50
+local function HasAtlas(name)
+    return C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(name) ~= nil
+end
+
 local function Tab(window, i)
     tabs[window] = tabs[window] or {}
     local t = tabs[window][i]
     if t then return t end
     t = CreateFrame("Button", nil, window, "SecureActionButtonTemplate")
     t.everlakeTab = true
-    t:SetSize(TAB, TAB)
-    -- right side, outside the client's own column of profession tabs (about 60 px wide)
-    t:SetPoint("TOPLEFT", window, "TOPRIGHT", 66, -40 - (i - 1) * (TAB + 6))
+    t:SetSize(SIDETAB_W, SIDETAB_H)
     t:RegisterForClicks("AnyUp", "AnyDown")
-    t.border = t:CreateTexture(nil, "BACKGROUND")
-    t.border:SetPoint("TOPLEFT", -3, 3)
-    t.border:SetPoint("BOTTOMRIGHT", 3, -3)
-    t.border:SetColorTexture(0, 0, 0, 0.85)
+    local atlas = HasAtlas("common-sidetab")
+    t.back = t:CreateTexture(nil, "BACKGROUND")
+    t.back:SetPoint("CENTER")
+    t.back:SetSize(SIDETAB_W, SIDETAB_ART_H)
     t.icon = t:CreateTexture(nil, "ARTWORK")
-    t.icon:SetAllPoints()
-    t:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+    t.icon:SetSize(SIDETAB_ICON, SIDETAB_ICON)
+    t.icon:SetPoint("CENTER")
+    t.selected = t:CreateTexture(nil, "OVERLAY")
+    t.selected:SetPoint("CENTER")
+    t.selected:SetSize(SIDETAB_W, SIDETAB_ART_H)
+    t.selected:Hide()
+    if atlas then
+        t.back:SetAtlas("common-sidetab")
+        t.selected:SetAtlas("common-sidetab-selected")
+        t:SetHighlightAtlas("common-sidetab-hover", "ADD")
+        local hl = t:GetHighlightTexture()
+        if hl then hl:ClearAllPoints() hl:SetPoint("CENTER") hl:SetSize(SIDETAB_W, SIDETAB_ART_H) end
+    else   -- a client without these atlases: a plain dark frame
+        t.back:SetColorTexture(0, 0, 0, 0.85)
+        t.selected:SetColorTexture(1, 0.82, 0, 0.35)
+        t:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+    end
     t:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText(self.name or "")
         if self.rank then GameTooltip:AddLine(string.format("%d/%d", self.rank, self.maxRank), 1, 1, 1) end
-        if not self.cast then GameTooltip:AddLine("No profession window", 0.6, 0.6, 0.6) end
         GameTooltip:Show()
     end)
     t:SetScript("OnLeave", function() GameTooltip:Hide() end)
     tabs[window][i] = t
     return t
+end
+
+-- the profession the window shows now (its base skill line), when the client can tell
+local function OpenSkillLine()
+    if C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo then
+        local ok, info = pcall(C_TradeSkillUI.GetBaseProfessionInfo)
+        if ok and info then return info.professionID or info.skillLineID, info.professionName end
+    end
 end
 
 -- the client's "Professions" tab (it opens the two-profession overview): hidden, the column lists them all
@@ -376,7 +330,7 @@ local function RefreshTabs(window)
         layout.x = (first:GetLeft() or 0) - (window:GetRight() or 0)
         layout.gap = column[2] and math.max(0, (first:GetBottom() or 0) - (column[2]:GetTop() or 0)) or 6
     end
-    local size, gap, x = layout.size or TAB, layout.gap or 6, layout.x or 2
+    local size, gap, x = layout.size or SIDETAB_H, layout.gap or 6, layout.x or 2
 
     local all = {}
     local described = {}
@@ -390,18 +344,14 @@ local function RefreshTabs(window)
         end
     end
 
+    local openSkill, openName = OpenSkillLine()
     local n = 0
     for _, p in ipairs(KnownProfessions()) do
         if p.cast and not ColumnHas(described, p) then   -- no tab for a profession with no window
             n = n + 1
             local t = Tab(window, n)
-            if first then
-                t:SetSize(first:GetWidth(), first:GetHeight())
-                pcall(CopyFrame, first, t)
-            else
-                t:SetSize(size, size)
-            end
             t.icon:SetTexture(p.icon)
+            t.selected:SetShown(openName == p.name or (openSkill ~= nil and openSkill == p.skill))
             t.name, t.rank, t.maxRank, t.cast = p.name, p.rank, p.maxRank, p.cast
             t:SetAttribute("type", "spell")
             t:SetAttribute("spell", p.cast)
