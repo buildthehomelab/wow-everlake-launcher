@@ -1,7 +1,7 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-Moves the game to WoW Forever 1.60.1.71091, Blizzard's update of 24 November 2026 (the realms are on 71091 now). A plain client on 70959 or an earlier build is updated in place by Install. A client with the Everlake overlay is held back on its build until the overlay for 71091 is published. Nothing is forced: a client you don't update keeps working while the realms still let its build in.
+Adds every profession to the Everlake addon the launcher installs. Everlake lets a character learn all primary professions, but the game's own profession window and Professions tab only have room for two. The addon now adds the rest as tabs down the side of the profession window, in the same column as the game's own tabs, starting at the top and shrinking to fit when you know many; a click opens that profession. The game's "Professions" overview tab is hidden. A small panel beside the spellbook lists them too, with their ranks. /everlake prof shows or hides the panel, and /everlake prof book stops it opening with the spellbook.
 
-Validation: Windows, Linux and macOS test suites. On 71091's real Windows Wow.exe, the launcher still finds the table it writes the realm's key into (one entry, in .data). A 71091 client joined the test realm. Playing on 71091 with this launcher build has not been seen yet.
+Validation: Windows, Linux and macOS test suites. The panel and the side tabs were tried in game on WoW Forever 1.60.1.71091 with a test copy of the addon: every profession opened from its tab. The tabs' artwork still differs slightly from the game's own.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
