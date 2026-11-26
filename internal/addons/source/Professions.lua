@@ -298,43 +298,74 @@ local function Tab(window, i)
     return t
 end
 
+-- the client's "Professions" tab (it opens the two-profession overview): hidden, the column lists them all
+local function IsOverviewTab(d)
+    if not d.tip then return false end
+    -- globals that may be missing in this client: compared one by one (a list would stop at the first nil)
+    return d.tip == PROFESSIONS_BUTTON or d.tip == TRADE_SKILLS or d.tip == PROFESSIONS or d.tip == "Professions"
+end
+
+-- One column down the window's right edge: the client's tabs, then ours, from the top of the window. When they don't
+-- fit, all of them shrink evenly so the column ends at the window's bottom edge.
+local PAD = 8
+local layouts = {}   -- per window: the client's tab size, spacing and distance, read before we move its tabs
 local function RefreshTabs(window)
     if InCombatLockdown() then pending = true return end
     local column = ClientTabColumn(window) or {}
-    local last = column[#column]
-    local size = last and math.floor(last:GetHeight() + 0.5) or TAB
-    local gap = 6
-    if #column >= 2 then
-        gap = math.max(0, math.floor((column[#column - 1]:GetBottom() - last:GetTop()) + 0.5))
+    layouts[window] = layouts[window] or {}
+    local layout = layouts[window]
+    local first = column[1]
+    if first and not layout.size then
+        -- the client's own spacing and distance from the window, read once before anything is moved
+        layout.size = first:GetHeight()
+        layout.x = (first:GetLeft() or 0) - (window:GetRight() or 0)
+        layout.gap = column[2] and math.max(0, (first:GetBottom() or 0) - (column[2]:GetTop() or 0)) or 6
     end
+    local size, gap, x = layout.size or TAB, layout.gap or 6, layout.x or 2
+
+    local all = {}
     local described = {}
-    for _, tab in ipairs(column) do described[#described + 1] = DescribeTab(tab) end
+    for _, tab in ipairs(column) do
+        local d = DescribeTab(tab)
+        if IsOverviewTab(d) then
+            tab:Hide()
+        else
+            all[#all + 1] = tab
+            described[#described + 1] = d
+        end
+    end
+
     local n = 0
     for _, p in ipairs(KnownProfessions()) do
         if p.cast and not ColumnHas(described, p) then   -- no tab for a profession with no window
             n = n + 1
             local t = Tab(window, n)
-            if last then
-                t:SetSize(last:GetWidth(), last:GetHeight())
-                pcall(CopyFrame, last, t)
+            if first then
+                t:SetSize(first:GetWidth(), first:GetHeight())
+                pcall(CopyFrame, first, t)
             else
                 t:SetSize(size, size)
             end
-            t:ClearAllPoints()
-            if last then
-                t:SetPoint("TOPLEFT", last, "BOTTOMLEFT", 0, -gap - (n - 1) * (size + gap))
-            else
-                t:SetPoint("TOPLEFT", window, "TOPRIGHT", 2, -40 - (n - 1) * (size + gap))
-            end
             t.icon:SetTexture(p.icon)
             t.name, t.rank, t.maxRank, t.cast = p.name, p.rank, p.maxRank, p.cast
-            t:SetAttribute("type", p.cast and "spell" or nil)
+            t:SetAttribute("type", "spell")
             t:SetAttribute("spell", p.cast)
-            t.icon:SetDesaturated(not p.cast)
+            t.icon:SetDesaturated(false)
             t:Show()
+            all[#all + 1] = t
         end
     end
     for i = n + 1, #(tabs[window] or {}) do tabs[window][i]:Hide() end
+
+    local height = (window:GetHeight() or 600) - 2 * PAD
+    local needed = #all * (size + gap) - gap
+    local scale = needed > height and height / needed or 1
+    for i, tab in ipairs(all) do
+        tab:SetScale(scale)
+        tab:ClearAllPoints()
+        -- offsets are in the tab's own (scaled) units
+        tab:SetPoint("TOPLEFT", window, "TOPRIGHT", x / scale, -(PAD + (i - 1) * (size + gap) * scale) / scale)
+    end
 end
 
 local function HookProfessionWindows()
@@ -353,7 +384,7 @@ end
 
 local events = CreateFrame("Frame")
 for _, e in ipairs({ "PLAYER_LOGIN", "SPELLS_CHANGED", "SKILL_LINES_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED", "ADDON_LOADED",
-        "TRADE_SKILL_SHOW", "CRAFT_SHOW" }) do
+        "TRADE_SKILL_SHOW", "CRAFT_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED" }) do
     pcall(events.RegisterEvent, events, e)
 end
 events:SetScript("OnEvent", function(_, event)
@@ -365,11 +396,15 @@ events:SetScript("OnEvent", function(_, event)
     elseif panel:IsShown() then
         Refresh()
     end
-    if not InCombatLockdown() then
+    -- the client may lay its own tabs out again as it refreshes: redo ours a frame later too
+    local function relayout()
+        if InCombatLockdown() then return end
         for window in pairs(windowHooked) do
             if window:IsShown() then RefreshTabs(window) end
         end
     end
+    relayout()
+    if C_Timer and C_Timer.After then C_Timer.After(0, relayout) end
 end)
 
 -- /everlake prof: show or hide the panel; it also opens with the spellbook unless turned off with /everlake prof book
