@@ -420,6 +420,55 @@ local function SpellButton(parent, size)
     return b
 end
 
+-- Unlearn, as the client's own red X: a confirmation, then AbandonSkill(skill line). The server unlearns any primary
+-- profession by its skill line (CMSG_UNLEARN_SKILL), shown in the client's slots or not.
+-- only a new entry in the client's table (assigning the global itself would taint every popup)
+local UNLEARN_DIALOG = {
+    text = UNLEARN_SKILL or "Do you really want to unlearn %s?",
+    button1 = UNLEARN or ACCEPT or "Unlearn",
+    button2 = CANCEL or "Cancel",
+    OnAccept = function(_, skill) if skill and AbandonSkill then AbandonSkill(skill) end end,
+    timeout = 0,
+    whileDead = 1,
+    hideOnEscape = 1,
+    showAlert = 1,
+}
+if StaticPopupDialogs then StaticPopupDialogs.EVERLAKE_UNLEARN_PROFESSION = UNLEARN_DIALOG end
+
+local function UnlearnButton(parent)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(24, 24)
+    -- the client's own X when its page has one, else the group loot "pass" X
+    local model = _G.PrimaryProfession1 and (_G.PrimaryProfession1.UnlearnButton or _G.PrimaryProfession1UnlearnButton)
+    if type(model) ~= "table" or type(model.GetNormalTexture) ~= "function" then model = nil end
+    local normal = model and model:GetNormalTexture()
+    local atlas = normal and normal.GetAtlas and normal:GetAtlas()
+    if atlas then
+        b:SetNormalAtlas(atlas)
+        local pushed = model:GetPushedTexture()
+        if pushed and pushed:GetAtlas() then b:SetPushedAtlas(pushed:GetAtlas()) end
+    elseif normal and normal:GetTexture() then
+        b:SetNormalTexture(normal:GetTexture())
+        local pushed = model:GetPushedTexture()
+        if pushed and pushed:GetTexture() then b:SetPushedTexture(pushed:GetTexture()) end
+    else
+        b:SetNormalTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Up")
+        b:SetPushedTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Down")
+    end
+    if model and model.GetSize then b:SetSize(model:GetSize()) end
+    b:SetHighlightTexture("Interface\\Buttons\\UI-GroupLoot-Pass-Highlight", "ADD")
+    b:SetScript("OnClick", function(self)
+        if self.skill then StaticPopup_Show("EVERLAKE_UNLEARN_PROFESSION", self.profession, nil, self.skill) end
+    end)
+    b:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(UNLEARN or "Unlearn")
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    return b
+end
+
 local function Section(i, width, height)
     local f = sections[i]
     if f then return f end
@@ -442,7 +491,7 @@ local function Section(i, width, height)
     f.rank:SetPoint("TOPLEFT", f.main.name, "BOTTOMLEFT", 0, -1)
     f.bar = CreateFrame("StatusBar", nil, f)
     f.bar:SetPoint("LEFT", f, "LEFT", math.floor(width * 0.36), 0)
-    f.bar:SetPoint("RIGHT", f, "RIGHT", -18, 0)
+    f.bar:SetPoint("RIGHT", f, "RIGHT", -46, 0)
     f.bar:SetPoint("TOP", f.main, "TOP", 0, -8)
     f.bar:SetHeight(18)
     f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
@@ -452,6 +501,8 @@ local function Section(i, width, height)
     f.bar.bg:SetColorTexture(0, 0, 0, 0.8)
     f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.bar.text:SetPoint("CENTER")
+    f.unlearn = UnlearnButton(f)
+    f.unlearn:SetPoint("LEFT", f.bar, "RIGHT", 6, 0)
     f.extra = {}
     sections[i] = f
     return f
@@ -479,6 +530,7 @@ local function FillSection(f, entry)
         f.main:Show()
     end
     f.rank:SetText(RankTitle(entry.maxRank))
+    f.unlearn.skill, f.unlearn.profession = entry.skill, entry.name
     if entry.rank and entry.maxRank and entry.maxRank > 0 then
         f.bar:SetMinMaxValues(0, entry.maxRank)
         f.bar:SetValue(entry.rank)
