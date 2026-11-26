@@ -201,19 +201,72 @@ local function ClientTabColumn(window)
     return column
 end
 
--- names of the primary professions the client's own tabs already show
-local function ClientShownProfessions()
-    local shown = {}
-    if GetProfessions and GetProfessionInfo then
-        local p1, p2 = GetProfessions()
-        for _, index in ipairs({ p1 or 0, p2 or 0 }) do
-            if index > 0 then
-                local name = GetProfessionInfo(index)
-                if name then shown[name] = true end
+-- What a tab of the client's column stands for: its spell attribute, its icon, or the first line of its tooltip
+local function DescribeTab(tab)
+    local d = {}
+    if tab.GetAttribute then d.spell = tab:GetAttribute("spell") end
+    local normal = tab.GetNormalTexture and tab:GetNormalTexture()
+    if normal and normal.GetTexture then d.icon = normal:GetTexture() end
+    local onEnter = tab:GetScript("OnEnter")
+    if onEnter and GameTooltip and not InCombatLockdown() then
+        pcall(onEnter, tab)
+        local line = _G.GameTooltipTextLeft1
+        d.tip = line and line:GetText()
+        GameTooltip:Hide()
+    end
+    return d
+end
+
+local function ColumnHas(described, p)
+    for _, d in ipairs(described) do
+        if (d.spell and (d.spell == p.cast or d.spell == p.name))
+            or (d.icon and p.icon and d.icon == p.icon)
+            or (d.tip and (d.tip == p.name or (p.cast and d.tip == p.cast))) then
+            return true
+        end
+    end
+end
+
+-- Our tab wears the client tab's frame: every texture of the model tab except its icon, copied with its size,
+-- layer and place.
+local function CopyFrame(model, t)
+    if t.framed == model then return end
+    t.framed = model
+    local icon = model.GetNormalTexture and model:GetNormalTexture()
+    for _, region in ipairs({ model:GetRegions() }) do
+        if region:GetObjectType() == "Texture" and region ~= icon and region:IsShown() then
+            local copy = t:CreateTexture(nil, region:GetDrawLayer())
+            local atlas = region.GetAtlas and region:GetAtlas()
+            if atlas then
+                copy:SetAtlas(atlas)
+            else
+                copy:SetTexture(region:GetTexture())
+                copy:SetTexCoord(region:GetTexCoord())
+            end
+            copy:SetBlendMode(region:GetBlendMode())
+            copy:SetVertexColor(region:GetVertexColor())
+            copy:SetSize(region:GetSize())
+            for i = 1, region:GetNumPoints() do
+                local point, relative, relativePoint, x, y = region:GetPoint(i)
+                copy:SetPoint(point, relative == model and t or (relative or t), relativePoint, x, y)
             end
         end
     end
-    return shown
+    local highlight = model.GetHighlightTexture and model:GetHighlightTexture()
+    if highlight then
+        local atlas = highlight.GetAtlas and highlight:GetAtlas()
+        if atlas then t:SetHighlightTexture(atlas, "ADD") else t:SetHighlightTexture(highlight:GetTexture(), "ADD") end
+    end
+    if t.border then t.border:Hide() end
+    if icon then
+        t.icon:ClearAllPoints()
+        for i = 1, icon:GetNumPoints() do
+            local point, relative, relativePoint, x, y = icon:GetPoint(i)
+            t.icon:SetPoint(point, relative == model and t or (relative or t), relativePoint, x, y)
+        end
+        if icon:GetNumPoints() == 0 then t.icon:SetAllPoints() end
+        t.icon:SetDrawLayer(icon:GetDrawLayer())
+    end
 end
 
 local function Tab(window, i)
@@ -223,11 +276,13 @@ local function Tab(window, i)
     t = CreateFrame("Button", nil, window, "SecureActionButtonTemplate")
     t.everlakeTab = true
     t:SetSize(TAB, TAB)
+    -- right side, outside the client's own column of profession tabs (about 60 px wide)
+    t:SetPoint("TOPLEFT", window, "TOPRIGHT", 66, -40 - (i - 1) * (TAB + 6))
     t:RegisterForClicks("AnyUp", "AnyDown")
-    local border = t:CreateTexture(nil, "BACKGROUND")
-    border:SetPoint("TOPLEFT", -3, 3)
-    border:SetPoint("BOTTOMRIGHT", 3, -3)
-    border:SetColorTexture(0, 0, 0, 0.85)
+    t.border = t:CreateTexture(nil, "BACKGROUND")
+    t.border:SetPoint("TOPLEFT", -3, 3)
+    t.border:SetPoint("BOTTOMRIGHT", 3, -3)
+    t.border:SetColorTexture(0, 0, 0, 0.85)
     t.icon = t:CreateTexture(nil, "ARTWORK")
     t.icon:SetAllPoints()
     t:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
@@ -252,13 +307,19 @@ local function RefreshTabs(window)
     if #column >= 2 then
         gap = math.max(0, math.floor((column[#column - 1]:GetBottom() - last:GetTop()) + 0.5))
     end
-    local shown = ClientShownProfessions()
+    local described = {}
+    for _, tab in ipairs(column) do described[#described + 1] = DescribeTab(tab) end
     local n = 0
     for _, p in ipairs(KnownProfessions()) do
-        if not shown[p.name] then
+        if p.cast and not ColumnHas(described, p) then   -- no tab for a profession with no window
             n = n + 1
             local t = Tab(window, n)
-            t:SetSize(size, size)
+            if last then
+                t:SetSize(last:GetWidth(), last:GetHeight())
+                pcall(CopyFrame, last, t)
+            else
+                t:SetSize(size, size)
+            end
             t:ClearAllPoints()
             if last then
                 t:SetPoint("TOPLEFT", last, "BOTTOMLEFT", 0, -gap - (n - 1) * (size + gap))
