@@ -1,4 +1,5 @@
--- Every primary profession the character knows, one button each, next to the spellbook.
+-- Every primary profession the character knows: tabs down the side of the profession window, and a panel next to the
+-- spellbook.
 --
 -- Everlake lets a character learn all primary professions, but the client's Professions tab has room for two. A
 -- profession's window opens from its spell whether or not the tab lists it (/cast Blacksmithing works for all of them),
@@ -175,17 +176,85 @@ local function HookSpellbook()
     book:HookScript("OnHide", function() SetShown(false) end)
 end
 
+-- Tabs down the side of the profession window, one per known profession, so any of them is one click away from
+-- another (the client's own window only knows its two). Attached to whichever window this client opens.
+local TAB = 36
+local tabs = {}
+local windowHooked = {}
+local function ProfessionWindows()
+    return { _G.ProfessionsFrame, _G.TradeSkillFrame, _G.CraftFrame }
+end
+
+local function Tab(window, i)
+    tabs[window] = tabs[window] or {}
+    local t = tabs[window][i]
+    if t then return t end
+    t = CreateFrame("Button", nil, window, "SecureActionButtonTemplate")
+    t:SetSize(TAB, TAB)
+    t:SetPoint("TOPRIGHT", window, "TOPLEFT", -2, -40 - (i - 1) * (TAB + 6))
+    t:RegisterForClicks("AnyUp", "AnyDown")
+    local border = t:CreateTexture(nil, "BACKGROUND")
+    border:SetPoint("TOPLEFT", -3, 3)
+    border:SetPoint("BOTTOMRIGHT", 3, -3)
+    border:SetColorTexture(0, 0, 0, 0.85)
+    t.icon = t:CreateTexture(nil, "ARTWORK")
+    t.icon:SetAllPoints()
+    t:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+    t:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText(self.name or "")
+        if self.rank then GameTooltip:AddLine(string.format("%d/%d", self.rank, self.maxRank), 1, 1, 1) end
+        if not self.cast then GameTooltip:AddLine("No profession window", 0.6, 0.6, 0.6) end
+        GameTooltip:Show()
+    end)
+    t:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    tabs[window][i] = t
+    return t
+end
+
+local function RefreshTabs(window)
+    if InCombatLockdown() then pending = true return end
+    local list = KnownProfessions()
+    for i, p in ipairs(list) do
+        local t = Tab(window, i)
+        t.icon:SetTexture(p.icon)
+        t.name, t.rank, t.maxRank, t.cast = p.name, p.rank, p.maxRank, p.cast
+        t:SetAttribute("type", p.cast and "spell" or nil)
+        t:SetAttribute("spell", p.cast)
+        t.icon:SetDesaturated(not p.cast)
+        t:Show()
+    end
+    for i = #list + 1, #(tabs[window] or {}) do tabs[window][i]:Hide() end
+end
+
+local function HookProfessionWindows()
+    for _, window in ipairs(ProfessionWindows()) do
+        if window and not windowHooked[window] then
+            windowHooked[window] = true
+            window:HookScript("OnShow", function(self) RefreshTabs(self) end)
+            if window:IsShown() then RefreshTabs(window) end
+        end
+    end
+end
+
 local events = CreateFrame("Frame")
-for _, e in ipairs({ "PLAYER_LOGIN", "SPELLS_CHANGED", "SKILL_LINES_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED", "ADDON_LOADED" }) do
+for _, e in ipairs({ "PLAYER_LOGIN", "SPELLS_CHANGED", "SKILL_LINES_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED", "ADDON_LOADED",
+        "TRADE_SKILL_SHOW", "CRAFT_SHOW" }) do
     pcall(events.RegisterEvent, events, e)
 end
 events:SetScript("OnEvent", function(_, event)
     EverlakeDB = EverlakeDB or {}
     HookSpellbook()
+    HookProfessionWindows()   -- the profession window's addon loads on demand
     if event == "PLAYER_REGEN_ENABLED" and pending then
         SetShown(wantShown)
     elseif panel:IsShown() then
         Refresh()
+    end
+    if not InCombatLockdown() then
+        for window in pairs(windowHooked) do
+            if window:IsShown() then RefreshTabs(window) end
+        end
     end
 end)
 
@@ -195,6 +264,13 @@ function addon.ProfessionsCommand(arg)
     if arg == "book" then
         EverlakeDB.professionsWithSpellbook = EverlakeDB.professionsWithSpellbook == false
         print("Everlake: professions panel " .. (EverlakeDB.professionsWithSpellbook and "opens" or "no longer opens") .. " with the spellbook.")
+        return
+    end
+    if arg == "frame" then   -- which profession window this client has, for bug reports
+        for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame" }) do
+            local f = _G[name]
+            print(name .. ": " .. (f and (f:IsShown() and "shown" or "loaded") or "missing") .. (f and windowHooked[f] and ", tabs on" or ""))
+        end
         return
     end
     SetShown(not panel:IsShown())
