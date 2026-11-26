@@ -191,7 +191,8 @@ local function Tab(window, i)
     if t then return t end
     t = CreateFrame("Button", nil, window, "SecureActionButtonTemplate")
     t:SetSize(TAB, TAB)
-    t:SetPoint("TOPRIGHT", window, "TOPLEFT", -2, -40 - (i - 1) * (TAB + 6))
+    -- right side, outside the client's own column of profession tabs (about 60 px wide)
+    t:SetPoint("TOPLEFT", window, "TOPRIGHT", 66, -40 - (i - 1) * (TAB + 6))
     t:RegisterForClicks("AnyUp", "AnyDown")
     local border = t:CreateTexture(nil, "BACKGROUND")
     border:SetPoint("TOPLEFT", -3, 3)
@@ -201,7 +202,7 @@ local function Tab(window, i)
     t.icon:SetAllPoints()
     t:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
     t:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText(self.name or "")
         if self.rank then GameTooltip:AddLine(string.format("%d/%d", self.rank, self.maxRank), 1, 1, 1) end
         if not self.cast then GameTooltip:AddLine("No profession window", 0.6, 0.6, 0.6) end
