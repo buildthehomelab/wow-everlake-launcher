@@ -66,14 +66,14 @@ local function KnownProfessions()
         end
         if known then
             local name, icon = SpellNameIcon(p.ranks[1])
-            local cast
+            local cast, castId
             if p.open == "rank" then
-                cast = SpellNameIcon(known)
+                cast, castId = SpellNameIcon(known), known
             elseif p.open and Knows(p.open) then
-                cast = SpellNameIcon(p.open)
+                cast, castId = SpellNameIcon(p.open), p.open
             end
             local rank, maxRank = SkillRank(p.skill, name)
-            list[#list + 1] = { name = name or "?", icon = icon, cast = cast, rank = rank, maxRank = maxRank, skill = p.skill }
+            list[#list + 1] = { name = name or "?", icon = icon, cast = cast, rank = rank, maxRank = maxRank, skill = p.skill, castId = castId }
         end
     end
     return list
@@ -373,6 +373,195 @@ local function HookProfessionWindows()
     end
 end
 
+-- The Professions overview (ProfessionsBookFrame) has room for the client's primary professions only. Its two top
+-- sections are covered by a scrolling list of every known primary profession: icon, rank bar and its spells.
+-- Cooking, Fishing and First Aid below stay the client's.
+local GATHER_MAIN = { [186] = 2580, [182] = 2383 }                -- Mining: Find Minerals, Herbalism: Find Herbs
+local EXTRA_SPELLS = { [333] = { 13262 }, [186] = { 2656 }, [755] = { 31252 }, [773] = { 51005 } }   -- Disenchant, Smelting, Prospecting, Milling
+
+local function RankTitle(maxRank)
+    if not maxRank then return "" end
+    if maxRank <= 75 then return "Apprentice" elseif maxRank <= 150 then return "Journeyman"
+    elseif maxRank <= 225 then return "Expert" elseif maxRank <= 300 then return "Artisan" end
+    return "Master"
+end
+
+-- spell ids a section offers: the profession's own spell (or the gathering tracker), then its extras; known ones only
+local function SectionSpells(entry)
+    local spells = {}
+    local main = GATHER_MAIN[entry.skill] or entry.castId
+    if main and Knows(main) then spells[#spells + 1] = main end
+    for _, id in ipairs(EXTRA_SPELLS[entry.skill] or {}) do
+        if Knows(id) then spells[#spells + 1] = id end
+    end
+    return spells
+end
+
+local overview, overviewContent, sections = nil, nil, {}
+local SECTION_GAP = 6
+
+local function SpellButton(parent, size)
+    local b = CreateFrame("Button", nil, parent, "SecureActionButtonTemplate")
+    b:SetSize(size, size)
+    b:RegisterForClicks("AnyUp", "AnyDown")
+    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon:SetAllPoints()
+    b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+    b.name = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    b.name:SetPoint("LEFT", b, "RIGHT", 8, 0)
+    b:SetScript("OnEnter", function(self)
+        if self.spellId then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if GameTooltip.SetSpellByID then GameTooltip:SetSpellByID(self.spellId) else GameTooltip:SetText(self.name:GetText() or "") end
+            GameTooltip:Show()
+        end
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    return b
+end
+
+local function Section(i, width, height)
+    local f = sections[i]
+    if f then return f end
+    f = CreateFrame("Frame", nil, overviewContent)
+    f:SetSize(width, height)
+    f:SetPoint("TOPLEFT", 0, -(i - 1) * (height + SECTION_GAP))
+    f.bg = f:CreateTexture(nil, "BACKGROUND")
+    f.bg:SetAllPoints()
+    f.bg:SetColorTexture(0, 0, 0, 0.3)
+    f.edge = f:CreateTexture(nil, "BORDER")
+    f.edge:SetPoint("BOTTOMLEFT", 8, 0)
+    f.edge:SetPoint("BOTTOMRIGHT", -8, 0)
+    f.edge:SetHeight(1)
+    f.edge:SetColorTexture(0.6, 0.5, 0.3, 0.6)
+    f.header = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    f.header:SetPoint("TOPLEFT", 18, -14)
+    f.main = SpellButton(f, 36)
+    f.main:SetPoint("TOPLEFT", 18, -40)
+    f.rank = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.rank:SetPoint("TOPLEFT", f.main.name, "BOTTOMLEFT", 0, -1)
+    f.bar = CreateFrame("StatusBar", nil, f)
+    f.bar:SetPoint("LEFT", f, "LEFT", math.floor(width * 0.36), 0)
+    f.bar:SetPoint("RIGHT", f, "RIGHT", -18, 0)
+    f.bar:SetPoint("TOP", f.main, "TOP", 0, -8)
+    f.bar:SetHeight(18)
+    f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    f.bar:SetStatusBarColor(0.9, 0.45, 0.1)
+    f.bar.bg = f.bar:CreateTexture(nil, "BACKGROUND")
+    f.bar.bg:SetAllPoints()
+    f.bar.bg:SetColorTexture(0, 0, 0, 0.8)
+    f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.bar.text:SetPoint("CENTER")
+    f.extra = {}
+    sections[i] = f
+    return f
+end
+
+local function FillSection(f, entry)
+    f.header:SetText(entry.name)
+    local spells = SectionSpells(entry)
+    local function setButton(b, id)
+        local name, icon = SpellNameIcon(id)
+        b.spellId = id
+        b.icon:SetTexture(icon)
+        b.name:SetText(name or "")
+        b:SetAttribute("type", "spell")
+        b:SetAttribute("spell", name)
+        b:Show()
+    end
+    if spells[1] then
+        setButton(f.main, spells[1])
+    else   -- nothing to cast (Skinning): the profession's icon and name only
+        f.main.spellId = nil
+        f.main:SetAttribute("type", nil)
+        f.main.icon:SetTexture(entry.icon)
+        f.main.name:SetText(entry.name)
+        f.main:Show()
+    end
+    f.rank:SetText(RankTitle(entry.maxRank))
+    if entry.rank and entry.maxRank and entry.maxRank > 0 then
+        f.bar:SetMinMaxValues(0, entry.maxRank)
+        f.bar:SetValue(entry.rank)
+        f.bar.text:SetText(string.format("%s %d/%d", entry.name, entry.rank, entry.maxRank))
+        f.bar:Show()
+    else
+        f.bar:Hide()
+    end
+    for k = 2, math.max(#spells, #f.extra + 1) do
+        local b = f.extra[k - 1]
+        if spells[k] then
+            if not b then
+                b = SpellButton(f, 36)
+                b:SetPoint("TOPLEFT", f.main, "BOTTOMLEFT", 0, -10 - (k - 2) * 44)
+                f.extra[k - 1] = b
+            end
+            setButton(b, spells[k])
+        elseif b then
+            b:Hide()
+        end
+    end
+    f:Show()
+end
+
+local function CoveredSections()
+    return _G.PrimaryProfession1, _G.PrimaryProfession2
+end
+
+local function RefreshOverview(book)
+    if InCombatLockdown() then pending = true return end
+    local p1, p2 = CoveredSections()
+    if not overview then
+        local ok, scroll = pcall(CreateFrame, "ScrollFrame", "EverlakeProfessionsOverview", book, "UIPanelScrollFrameTemplate")
+        if not ok then scroll = CreateFrame("ScrollFrame", "EverlakeProfessionsOverview", book) end
+        overview = scroll
+        if p1 and p2 then
+            overview:SetPoint("TOPLEFT", p1, "TOPLEFT", 0, 0)
+            overview:SetPoint("BOTTOMRIGHT", p2, "BOTTOMRIGHT", -26, 0)   -- room for the scroll bar
+        else
+            overview:SetPoint("TOPLEFT", book, "TOPLEFT", 14, -78)
+            overview:SetPoint("TOPRIGHT", book, "TOPRIGHT", -40, -78)
+            overview:SetHeight(320)
+        end
+        overview:EnableMouseWheel(true)
+        overview:SetScript("OnMouseWheel", function(self, delta)
+            local range = self:GetVerticalScrollRange()
+            self:SetVerticalScroll(math.max(0, math.min(range, self:GetVerticalScroll() - delta * 60)))
+        end)
+        overviewContent = CreateFrame("Frame", nil, overview)
+        overview:SetScrollChild(overviewContent)
+        -- the client shows its own two sections again as it refreshes the page: keep them covered
+        for _, covered in ipairs({ p1, p2 }) do
+            covered:HookScript("OnShow", function(self)
+                if overview and overview:IsShown() and not InCombatLockdown() then self:Hide() end
+            end)
+        end
+    end
+    local width = overview:GetWidth()
+    if not width or width < 50 then width = (p1 and p1:GetWidth()) or 600 end
+    local height = (p1 and p1:GetHeight()) or 150
+    if height < 110 then height = 110 end
+    overviewContent:SetSize(width, 1)
+    local list = {}
+    for _, p in ipairs(KnownProfessions()) do list[#list + 1] = p end
+    for i, entry in ipairs(list) do FillSection(Section(i, width, height), entry) end
+    for i = #list + 1, #sections do sections[i]:Hide() end
+    overviewContent:SetHeight(math.max(1, #list * (height + SECTION_GAP)))
+    for _, covered in ipairs({ p1, p2 }) do if covered then covered:Hide() end end
+    overview:Show()
+end
+
+local overviewHooked
+local function HookOverview()
+    local book = _G.ProfessionsBookFrame
+    if not book or overviewHooked then return end
+    overviewHooked = true
+    book:HookScript("OnShow", function(self)
+        RefreshOverview(self)
+        if C_Timer and C_Timer.After then C_Timer.After(0, function() if self:IsShown() then RefreshOverview(self) end end) end
+    end)
+    if book:IsShown() then RefreshOverview(book) end
+end
+
 local events = CreateFrame("Frame")
 for _, e in ipairs({ "PLAYER_LOGIN", "SPELLS_CHANGED", "SKILL_LINES_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED", "ADDON_LOADED",
         "TRADE_SKILL_SHOW", "CRAFT_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED" }) do
@@ -382,6 +571,8 @@ events:SetScript("OnEvent", function(_, event)
     EverlakeDB = EverlakeDB or {}
     HookSpellbook()
     HookProfessionWindows()   -- the profession window's addon loads on demand
+    HookOverview()
+    if _G.ProfessionsBookFrame and _G.ProfessionsBookFrame:IsShown() and not InCombatLockdown() and overview then RefreshOverview(_G.ProfessionsBookFrame) end
     if event == "PLAYER_REGEN_ENABLED" and pending then
         SetShown(wantShown)
     elseif panel:IsShown() then
@@ -407,7 +598,7 @@ function addon.ProfessionsCommand(arg)
         return
     end
     if arg == "frame" then   -- which profession window this client has, for bug reports
-        for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame" }) do
+        for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame", "ProfessionsBookFrame", "PrimaryProfession1", "PrimaryProfession2", "SecondaryProfession1" }) do
             local f = _G[name]
             print(name .. ": " .. (f and (f:IsShown() and "shown" or "loaded") or "missing") .. (f and windowHooked[f] and ", tabs on" or ""))
         end
