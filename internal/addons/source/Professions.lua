@@ -227,45 +227,100 @@ local function ColumnHas(described, p)
     end
 end
 
--- Our tab wears the client tab's frame: every texture of the model tab except its icon, copied with its size,
--- layer and place.
+-- Our tab wears the client tab's frame: every texture of the model tab and of its child frames, except its icon,
+-- copied with atlas or texture, coords, layer, size and place; and its pushed, checked and highlight textures.
+local function CopyTexture(region, onto, model, t)
+    local copy = onto:CreateTexture(nil, region:GetDrawLayer())
+    local atlas = region.GetAtlas and region:GetAtlas()
+    if atlas then
+        copy:SetAtlas(atlas)
+    else
+        copy:SetTexture(region:GetTexture())
+        copy:SetTexCoord(region:GetTexCoord())
+    end
+    copy:SetBlendMode(region:GetBlendMode())
+    copy:SetVertexColor(region:GetVertexColor())
+    copy:SetSize(region:GetSize())
+    for i = 1, region:GetNumPoints() do
+        local point, relative, relativePoint, x, y = region:GetPoint(i)
+        copy:SetPoint(point, (relative == model or not relative) and t or relative, relativePoint, x, y)
+    end
+    if region:GetNumPoints() == 0 then copy:SetAllPoints(t) end
+    if not region:IsShown() then copy:Hide() end
+    return copy
+end
+
+local function CopyButtonTexture(model, t, getter, setter)
+    local tex = model[getter] and model[getter](model)
+    if not tex then return end
+    local atlas = tex.GetAtlas and tex:GetAtlas()
+    if atlas then
+        t[setter](t, atlas)
+    elseif tex:GetTexture() then
+        t[setter](t, tex:GetTexture())
+        local mine = t[getter](t)
+        if mine then mine:SetTexCoord(tex:GetTexCoord()) end
+    end
+end
+
 local function CopyFrame(model, t)
     if t.framed == model then return end
     t.framed = model
     local icon = model.GetNormalTexture and model:GetNormalTexture()
-    for _, region in ipairs({ model:GetRegions() }) do
-        if region:GetObjectType() == "Texture" and region ~= icon and region:IsShown() then
-            local copy = t:CreateTexture(nil, region:GetDrawLayer())
-            local atlas = region.GetAtlas and region:GetAtlas()
-            if atlas then
-                copy:SetAtlas(atlas)
-            else
-                copy:SetTexture(region:GetTexture())
-                copy:SetTexCoord(region:GetTexCoord())
-            end
-            copy:SetBlendMode(region:GetBlendMode())
-            copy:SetVertexColor(region:GetVertexColor())
-            copy:SetSize(region:GetSize())
-            for i = 1, region:GetNumPoints() do
-                local point, relative, relativePoint, x, y = region:GetPoint(i)
-                copy:SetPoint(point, relative == model and t or (relative or t), relativePoint, x, y)
-            end
+    local skip = {}
+    if icon then skip[icon] = true end
+    for _, getter in ipairs({ "GetPushedTexture", "GetCheckedTexture", "GetHighlightTexture", "GetDisabledTexture" }) do
+        local tex = model[getter] and model[getter](model)
+        if tex then skip[tex] = true end
+    end
+    local function copyRegions(frame, onto)
+        for _, region in ipairs({ frame:GetRegions() }) do
+            if region:GetObjectType() == "Texture" and not skip[region] then CopyTexture(region, onto, model, t) end
         end
     end
-    local highlight = model.GetHighlightTexture and model:GetHighlightTexture()
-    if highlight then
-        local atlas = highlight.GetAtlas and highlight:GetAtlas()
-        if atlas then t:SetHighlightTexture(atlas, "ADD") else t:SetHighlightTexture(highlight:GetTexture(), "ADD") end
+    copyRegions(model, t)
+    for _, child in ipairs({ model:GetChildren() }) do   -- a frame drawn on top, as some tab templates have
+        local holder = CreateFrame("Frame", nil, t)
+        holder:SetAllPoints(t)
+        holder:SetFrameLevel(t:GetFrameLevel() + 1)
+        copyRegions(child, holder)
     end
+    CopyButtonTexture(model, t, "GetPushedTexture", "SetPushedTexture")
+    CopyButtonTexture(model, t, "GetHighlightTexture", "SetHighlightTexture")
     if t.border then t.border:Hide() end
     if icon then
         t.icon:ClearAllPoints()
         for i = 1, icon:GetNumPoints() do
             local point, relative, relativePoint, x, y = icon:GetPoint(i)
-            t.icon:SetPoint(point, relative == model and t or (relative or t), relativePoint, x, y)
+            t.icon:SetPoint(point, (relative == model or not relative) and t or relative, relativePoint, x, y)
         end
         if icon:GetNumPoints() == 0 then t.icon:SetAllPoints() end
         t.icon:SetDrawLayer(icon:GetDrawLayer())
+        t.icon:SetTexCoord(icon:GetTexCoord())
+    end
+end
+
+-- /everlake prof frame: what a client tab is made of, to match its look
+local function DumpTab(tab)
+    local function tex(r)
+        local atlas = r.GetAtlas and r:GetAtlas()
+        local w, h = r:GetSize()
+        return string.format("%s %s %dx%d%s", r:GetDrawLayer() or "?", atlas and ("atlas " .. atlas) or tostring(r:GetTexture()),
+            w or 0, h or 0, r:IsShown() and "" or " hidden")
+    end
+    print(string.format("tab %s (%s) %dx%d", tab:GetName() or "unnamed", tab:GetObjectType(), tab:GetWidth(), tab:GetHeight()))
+    for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetCheckedTexture", "GetHighlightTexture" }) do
+        local r = tab[getter] and tab[getter](tab)
+        if r then print("  " .. getter:sub(4) .. ": " .. tex(r)) end
+    end
+    for _, r in ipairs({ tab:GetRegions() }) do
+        if r:GetObjectType() == "Texture" then print("  region: " .. tex(r)) end
+    end
+    for _, c in ipairs({ tab:GetChildren() }) do
+        print("  child " .. (c:GetName() or c:GetObjectType()))
+        for _, r in ipairs({ c:GetRegions() }) do
+            if r:GetObjectType() == "Texture" then print("    region: " .. tex(r)) end
+        end
     end
 end
 
@@ -419,6 +474,12 @@ function addon.ProfessionsCommand(arg)
         for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame" }) do
             local f = _G[name]
             print(name .. ": " .. (f and (f:IsShown() and "shown" or "loaded") or "missing") .. (f and windowHooked[f] and ", tabs on" or ""))
+        end
+        for _, window in ipairs(ProfessionWindows()) do
+            if window and window:IsShown() then
+                local column = ClientTabColumn(window)
+                if column and column[1] then DumpTab(column[1]) end
+            end
         end
         return
     end
