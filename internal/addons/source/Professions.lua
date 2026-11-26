@@ -478,7 +478,10 @@ function addon.ProfessionsCommand(arg)
         for _, window in ipairs(ProfessionWindows()) do
             if window and window:IsShown() then
                 local column = ClientTabColumn(window)
-                if column and column[1] then DumpTab(column[1]) end
+                if column and column[1] then
+                    local ok, err = pcall(DumpTab, column[1])
+                    if not ok then print("tab dump failed: " .. tostring(err)) end
+                end
             end
         end
         return
