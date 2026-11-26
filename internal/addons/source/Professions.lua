@@ -66,14 +66,14 @@ local function KnownProfessions()
         end
         if known then
             local name, icon = SpellNameIcon(p.ranks[1])
-            local cast
+            local cast, castId
             if p.open == "rank" then
-                cast = SpellNameIcon(known)
+                cast, castId = SpellNameIcon(known), known
             elseif p.open and Knows(p.open) then
-                cast = SpellNameIcon(p.open)
+                cast, castId = SpellNameIcon(p.open), p.open
             end
             local rank, maxRank = SkillRank(p.skill, name)
-            list[#list + 1] = { name = name or "?", icon = icon, cast = cast, rank = rank, maxRank = maxRank, skill = p.skill }
+            list[#list + 1] = { name = name or "?", icon = icon, cast = cast, rank = rank, maxRank = maxRank, skill = p.skill, castId = castId }
         end
     end
     return list
@@ -303,13 +303,6 @@ local function OpenSkillLine()
     end
 end
 
--- the client's "Professions" tab (it opens the two-profession overview): hidden, the column lists them all
-local function IsOverviewTab(d)
-    if not d.tip then return false end
-    -- globals that may be missing in this client: compared one by one (a list would stop at the first nil)
-    return d.tip == PROFESSIONS_BUTTON or d.tip == TRADE_SKILLS or d.tip == PROFESSIONS or d.tip == "Professions"
-end
-
 -- One column down the window's right edge: the client's tabs, then ours, from the top of the window. When they don't
 -- fit, all of them shrink evenly so the column ends at the window's bottom edge.
 local PAD = 8
@@ -330,14 +323,11 @@ local function RefreshTabs(window)
 
     local all = {}
     local described = {}
+    -- every client tab stays, the "Professions" overview too: it holds the professions' extra spells (Disenchant,
+    -- Bait and Tackle, the secondary professions)
     for _, tab in ipairs(column) do
-        local d = DescribeTab(tab)
-        if IsOverviewTab(d) then
-            tab:Hide()
-        else
-            all[#all + 1] = tab
-            described[#described + 1] = d
-        end
+        all[#all + 1] = tab
+        described[#described + 1] = DescribeTab(tab)
     end
 
     local openSkill, openName = OpenSkillLine()
@@ -417,7 +407,7 @@ function addon.ProfessionsCommand(arg)
         return
     end
     if arg == "frame" then   -- which profession window this client has, for bug reports
-        for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame" }) do
+        for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame", "ProfessionsBookFrame", "PrimaryProfession1", "PrimaryProfession2", "SecondaryProfession1" }) do
             local f = _G[name]
             print(name .. ": " .. (f and (f:IsShown() and "shown" or "loaded") or "missing") .. (f and windowHooked[f] and ", tabs on" or ""))
         end
@@ -434,3 +424,6 @@ function addon.ProfessionsCommand(arg)
     end
     SetShown(not panel:IsShown())
 end
+
+-- for Overview.lua (the Everlake Professions window)
+addon.Professions = { Known = KnownProfessions, SpellNameIcon = SpellNameIcon, Knows = Knows, SkillRank = SkillRank }

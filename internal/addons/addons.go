@@ -19,6 +19,9 @@ var source []byte
 //go:embed source/Professions.lua
 var professions []byte
 
+//go:embed source/Overview.lua
+var overview []byte
+
 type Manifest struct {
 	Product   string
 	Version   string
@@ -45,8 +48,8 @@ func Package(p pin.Pin) (map[string][]byte, error) {
 		return nil, err
 	}
 	config := fmt.Sprintf("local _, addon = ...\naddon.client = %q\naddon.version = %q\n", p.Product, p.Version)
-	toc := fmt.Sprintf("## Interface: %d\n## Title: Everlake\n## Notes: Everlake client information and a panel with every profession you know\n## Version: 1.0.0\n## SavedVariables: EverlakeDB\nProfile.lua\nEverlake.lua\nProfessions.lua\n", api)
-	return map[string][]byte{"Everlake.lua": source, "Professions.lua": professions, "Profile.lua": []byte(config), "Everlake.toc": []byte(toc), ".everlake-package.json": manifest}, nil
+	toc := fmt.Sprintf("## Interface: %d\n## Title: Everlake\n## Notes: Everlake client information and a panel with every profession you know\n## Version: 1.0.0\n## SavedVariables: EverlakeDB\nProfile.lua\nEverlake.lua\nProfessions.lua\nOverview.lua\n", api)
+	return map[string][]byte{"Everlake.lua": source, "Professions.lua": professions, "Overview.lua": overview, "Profile.lua": []byte(config), "Everlake.toc": []byte(toc), ".everlake-package.json": manifest}, nil
 }
 
 // Install expects the caller to hold the client install lock. Previous packages
