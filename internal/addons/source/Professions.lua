@@ -303,13 +303,6 @@ local function OpenSkillLine()
     end
 end
 
--- the client's "Professions" tab (it opens the two-profession overview): hidden, the column lists them all
-local function IsOverviewTab(d)
-    if not d.tip then return false end
-    -- globals that may be missing in this client: compared one by one (a list would stop at the first nil)
-    return d.tip == PROFESSIONS_BUTTON or d.tip == TRADE_SKILLS or d.tip == PROFESSIONS or d.tip == "Professions"
-end
-
 -- One column down the window's right edge: the client's tabs, then ours, from the top of the window. When they don't
 -- fit, all of them shrink evenly so the column ends at the window's bottom edge.
 local PAD = 8
@@ -330,14 +323,11 @@ local function RefreshTabs(window)
 
     local all = {}
     local described = {}
+    -- every client tab stays, the "Professions" overview too: it holds the professions' extra spells (Disenchant,
+    -- Bait and Tackle, the secondary professions)
     for _, tab in ipairs(column) do
-        local d = DescribeTab(tab)
-        if IsOverviewTab(d) then
-            tab:Hide()
-        else
-            all[#all + 1] = tab
-            described[#described + 1] = d
-        end
+        all[#all + 1] = tab
+        described[#described + 1] = DescribeTab(tab)
     end
 
     local openSkill, openName = OpenSkillLine()
