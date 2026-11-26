@@ -185,14 +185,44 @@ local function ProfessionWindows()
     return { _G.ProfessionsFrame, _G.TradeSkillFrame, _G.CraftFrame }
 end
 
+-- The client's own column of profession tabs on the window's right edge: its buttons, bottom-most last. Our tabs
+-- continue that column below them.
+local function ClientTabColumn(window)
+    local right = window:GetRight()
+    if not right then return end
+    local column = {}
+    for _, child in ipairs({ window:GetChildren() }) do
+        local left, width = child:GetLeft(), child:GetWidth()
+        if child:IsShown() and left and left >= right - 8 and width and width > 16 and width <= 72 and not child.everlakeTab then
+            column[#column + 1] = child
+        end
+    end
+    table.sort(column, function(a, b) return (a:GetBottom() or 0) > (b:GetBottom() or 0) end)
+    return column
+end
+
+-- names of the primary professions the client's own tabs already show
+local function ClientShownProfessions()
+    local shown = {}
+    if GetProfessions and GetProfessionInfo then
+        local p1, p2 = GetProfessions()
+        for _, index in ipairs({ p1 or 0, p2 or 0 }) do
+            if index > 0 then
+                local name = GetProfessionInfo(index)
+                if name then shown[name] = true end
+            end
+        end
+    end
+    return shown
+end
+
 local function Tab(window, i)
     tabs[window] = tabs[window] or {}
     local t = tabs[window][i]
     if t then return t end
     t = CreateFrame("Button", nil, window, "SecureActionButtonTemplate")
+    t.everlakeTab = true
     t:SetSize(TAB, TAB)
-    -- right side, outside the client's own column of profession tabs (about 60 px wide)
-    t:SetPoint("TOPLEFT", window, "TOPRIGHT", 66, -40 - (i - 1) * (TAB + 6))
     t:RegisterForClicks("AnyUp", "AnyDown")
     local border = t:CreateTexture(nil, "BACKGROUND")
     border:SetPoint("TOPLEFT", -3, 3)
@@ -215,24 +245,46 @@ end
 
 local function RefreshTabs(window)
     if InCombatLockdown() then pending = true return end
-    local list = KnownProfessions()
-    for i, p in ipairs(list) do
-        local t = Tab(window, i)
-        t.icon:SetTexture(p.icon)
-        t.name, t.rank, t.maxRank, t.cast = p.name, p.rank, p.maxRank, p.cast
-        t:SetAttribute("type", p.cast and "spell" or nil)
-        t:SetAttribute("spell", p.cast)
-        t.icon:SetDesaturated(not p.cast)
-        t:Show()
+    local column = ClientTabColumn(window) or {}
+    local last = column[#column]
+    local size = last and math.floor(last:GetHeight() + 0.5) or TAB
+    local gap = 6
+    if #column >= 2 then
+        gap = math.max(0, math.floor((column[#column - 1]:GetBottom() - last:GetTop()) + 0.5))
     end
-    for i = #list + 1, #(tabs[window] or {}) do tabs[window][i]:Hide() end
+    local shown = ClientShownProfessions()
+    local n = 0
+    for _, p in ipairs(KnownProfessions()) do
+        if not shown[p.name] then
+            n = n + 1
+            local t = Tab(window, n)
+            t:SetSize(size, size)
+            t:ClearAllPoints()
+            if last then
+                t:SetPoint("TOPLEFT", last, "BOTTOMLEFT", 0, -gap - (n - 1) * (size + gap))
+            else
+                t:SetPoint("TOPLEFT", window, "TOPRIGHT", 2, -40 - (n - 1) * (size + gap))
+            end
+            t.icon:SetTexture(p.icon)
+            t.name, t.rank, t.maxRank, t.cast = p.name, p.rank, p.maxRank, p.cast
+            t:SetAttribute("type", p.cast and "spell" or nil)
+            t:SetAttribute("spell", p.cast)
+            t.icon:SetDesaturated(not p.cast)
+            t:Show()
+        end
+    end
+    for i = n + 1, #(tabs[window] or {}) do tabs[window][i]:Hide() end
 end
 
 local function HookProfessionWindows()
     for _, window in ipairs(ProfessionWindows()) do
         if window and not windowHooked[window] then
             windowHooked[window] = true
-            window:HookScript("OnShow", function(self) RefreshTabs(self) end)
+            -- the client lays out its own tabs as the window opens: place ours a frame later too
+            window:HookScript("OnShow", function(self)
+                RefreshTabs(self)
+                if C_Timer and C_Timer.After then C_Timer.After(0, function() if self:IsShown() then RefreshTabs(self) end end) end
+            end)
             if window:IsShown() then RefreshTabs(window) end
         end
     end
