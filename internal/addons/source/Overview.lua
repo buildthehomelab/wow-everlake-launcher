@@ -247,17 +247,18 @@ end
 local art
 local function ClientArt(p1)
     if art then return art end
-    local found = { cross = {} }
+    local found = { cross = {}, atlases = {} }
     local function walk(frame, depth)
         if depth > 4 then return end
         if frame.GetStatusBarTexture then
             local t = frame:GetStatusBarTexture()
             local a = t and t.GetAtlas and t:GetAtlas()
-            if a then found.fill = found.fill or a end
+            if a then found.barAtlas = found.barAtlas or a end
         end
         for _, r in ipairs({ frame:GetRegions() }) do
             local a = r.GetObjectType and r:GetObjectType() == "Texture" and r:GetAtlas()
             if a then
+                found.atlases[#found.atlases + 1] = a
                 local card = a:match("^Profession%-overview%-Card%-(.+)$")
                 if card then found.cardName = card end
                 if a:find("crossmark", 1, true) then found.cross[#found.cross + 1] = a end
@@ -267,6 +268,18 @@ local function ClientArt(p1)
     end
     walk(p1, 0)
     if not found.cardName then return nil end   -- the client has not filled its section yet: try again later
+    -- the bar fill: the status bar texture when it names the profession, else any other atlas naming it, one with
+    -- "Bar" or "Fill" in its name first
+    local name = found.cardName
+    if found.barAtlas and found.barAtlas:find(name, 1, true) then found.fill = found.barAtlas end
+    if not found.fill then
+        for _, a in ipairs(found.atlases) do
+            if a:find(name, 1, true) and not a:find("overview%-Card") then
+                if a:find("Bar") or a:find("Fill") then found.fill = a break end
+                found.fill = found.fill or a
+            end
+        end
+    end
     for _, a in ipairs(found.cross) do
         if a:find("%-pressed$") then found.crossPushed = a
         elseif a:find("%-highlight$") or a:find("%-hover$") then found.crossHighlight = a
@@ -473,6 +486,37 @@ local function DumpPage()
     walk(p1, 0, "PrimaryProfession1")
 end
 addon.DumpProfessionPage = DumpPage
+
+-- /everlake prof bar: only the bar parts of the client's first section, and what was picked from them
+local function DumpBar()
+    local _, _, p1 = PageParts()
+    if not p1 then print("No PrimaryProfession1 in this client.") return end
+    local function walk(frame, depth, label)
+        if depth > 5 then return end
+        local isBar = label:find("Bar") or (frame.GetStatusBarTexture and true)
+        if isBar then
+            local w, h = frame:GetSize()
+            print(string.rep(" ", depth) .. label .. string.format(" (%s %dx%d)", frame:GetObjectType(), w or 0, h or 0))
+            if frame.GetStatusBarTexture and frame:GetStatusBarTexture() then
+                local t = frame:GetStatusBarTexture()
+                print(string.rep(" ", depth + 1) .. "fill: " .. tostring(t:GetAtlas() or t:GetTexture()))
+            end
+            for _, r in ipairs({ frame:GetRegions() }) do
+                if r:GetObjectType() == "Texture" then
+                    print(string.rep(" ", depth + 1) .. (r:GetDrawLayer() or "?") .. " " .. tostring(r:GetAtlas() or r:GetTexture()))
+                end
+            end
+        end
+        for _, c in ipairs({ frame:GetChildren() }) do
+            local key
+            for k, v in pairs(frame) do if v == c and type(k) == "string" then key = k break end end
+            walk(c, depth + 1, key or c:GetName() or c:GetObjectType())
+        end
+    end
+    walk(p1, 0, "PrimaryProfession1")
+    print("picked: card " .. tostring(art and art.cardName) .. ", fill " .. tostring(art and art.fill))
+end
+addon.DumpProfessionBar = DumpBar
 
 local events = CreateFrame("Frame")
 for _, e in ipairs({ "PLAYER_LOGIN", "ADDON_LOADED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED",

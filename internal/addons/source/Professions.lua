@@ -406,6 +406,10 @@ function addon.ProfessionsCommand(arg)
         print("Everlake: professions panel " .. (EverlakeDB.professionsWithSpellbook and "opens" or "no longer opens") .. " with the spellbook.")
         return
     end
+    if arg == "bar" then   -- the bar parts of the client's Professions page section (Overview.lua)
+        if addon.DumpProfessionBar then pcall(addon.DumpProfessionBar) end
+        return
+    end
     if arg == "page" then   -- the art of the client's Professions page sections (Overview.lua)
         if addon.DumpProfessionPage then pcall(addon.DumpProfessionPage) end
         return
