@@ -526,18 +526,41 @@ local function FillPrimary(f, entry, spells, p1)
     local card = ATLAS_NAME[entry.skill] and ("Profession-overview-Card-" .. ATLAS_NAME[entry.skill])
     f.card:SetTexCoord(0, 1, 0, 1)
     local hasCard = card and TrySetAtlas(f.card, card)
-    if not hasCard and entry.secondary and secondaryArt and secondaryArt[entry.name] then
-        local a = secondaryArt[entry.name]
-        hasCard = TrySetAtlas(f.card, a.atlas)
-        if hasCard then
-            -- the client's secondary card is tall (224x275): a band of it at the section's shape, from its lower part
-            -- where the art is
-            local ulx, uly, llx, lly, urx, ury, lrx, lry = f.card:GetTexCoord()
-            local left, right, top, bottom = ulx, urx, uly, lly
-            local h = math.min(1, (a.w / a.h) / (sectionW / math.max(1, f:GetHeight() or sectionH)))
-            local centre = math.min(1 - h / 2, math.max(h / 2, 0.68))
-            f.card:SetTexCoord(left, right, top + (centre - h / 2) * (bottom - top), top + (centre + h / 2) * (bottom - top))
+    -- Cooking, Fishing, First Aid: the client has only tall cards for them (224x275, with their own border). A plain
+    -- panel, and on its right the card's picture through a clipping frame: the card a little larger than the clip so
+    -- its border falls outside, its lower part (where the picture is) showing, its left edge faded into the panel.
+    -- (Texture coordinates cannot cut an atlas here: they covered the whole sheet.)
+    local secondary = not hasCard and entry.secondary and secondaryArt and secondaryArt[entry.name]
+    if secondary then
+        if type(f.artClip) ~= "table" then
+            f.artClip = CreateFrame("Frame", nil, f)
+            f.artClip:SetPoint("TOPRIGHT", -4, -4)
+            f.artClip:SetPoint("BOTTOMRIGHT", -4, 4)
+            f.artClip:SetWidth(250)
+            if f.artClip.SetClipsChildren then f.artClip:SetClipsChildren(true) end
+            f.artClip:SetFrameLevel(f:GetFrameLevel() + 1)
+            f.secArt = f.artClip:CreateTexture(nil, "BACKGROUND")
+            f.artFade = f.artClip:CreateTexture(nil, "ARTWORK")
+            f.artFade:SetPoint("TOPLEFT")
+            f.artFade:SetPoint("BOTTOMLEFT")
+            f.artFade:SetWidth(60)
+            f.artFade:SetColorTexture(1, 1, 1, 1)
+            pcall(function()
+                f.artFade:SetGradient("HORIZONTAL", CreateColor(0.06, 0.05, 0.04, 1), CreateColor(0.06, 0.05, 0.04, 0))
+            end)
         end
+        if TrySetAtlas(f.secArt, secondary.atlas) then
+            local scale = 1.2
+            f.secArt:SetSize(secondary.w * scale, secondary.h * scale)
+            f.secArt:ClearAllPoints()
+            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 12, -14)
+            f.secArt:SetAlpha(0.6)
+            f.artClip:Show()
+        else
+            f.artClip:Hide()
+        end
+    elseif type(f.artClip) == "table" then
+        f.artClip:Hide()
     end
     f.card:SetShown(hasCard and true or false)
     f.plain:SetShown(not hasCard)
