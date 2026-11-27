@@ -69,6 +69,21 @@ local function ClientProfessions()
     return primary, secondary
 end
 
+-- Every profession in the character's skill list, by skill line: GetProfessionInfo takes any skill list index, not
+-- only the ones GetProfessions hands out, so it gives rank, max rank and spellbook spells for every profession.
+local function SkillListProfessions()
+    local bySkill = {}
+    if not GetProfessionInfo then return bySkill end
+    for index = 1, 128 do
+        local ok, name, icon, rank, maxRank, numSpells, offset, skillLine = pcall(GetProfessionInfo, index)
+        if ok and name and skillLine and not bySkill[skillLine] then
+            bySkill[skillLine] = { index = index, name = name, icon = icon, rank = rank, maxRank = maxRank,
+                numSpells = numSpells, offset = offset, skill = skillLine }
+        end
+    end
+    return bySkill
+end
+
 -- spells of a primary profession the client has no slot for: its own spell (or the gathering tracker), then extras
 local function StaticSpells(entry)
     local spells = {}
@@ -296,12 +311,16 @@ local function Refresh()
     if w and w > 100 then sectionW = math.floor(w - 24) end
     if h and h > 60 then sectionH = math.floor(h) end
 
-    local clientPrimary = ClientProfessions()
+    local skillList = SkillListProfessions()
     local y, n = 0, 0
     for _, entry in ipairs(P.Known()) do
         n = n + 1
-        local client = clientPrimary[entry.skill]
-        local spells = client and BookSpells(client.index) or {}
+        local client = skillList[entry.skill]
+        if client then   -- rank from the skill list when the addon's own lookup had none
+            entry.rank = entry.rank or client.rank
+            entry.maxRank = (entry.maxRank and entry.maxRank > 0) and entry.maxRank or client.maxRank
+        end
+        local spells = (client and (client.numSpells or 0) > 0) and BookSpells(client.index) or {}
         if #spells == 0 then spells = StaticSpells(entry) end
         local f = PrimarySection(n)
         f:ClearAllPoints()
@@ -333,6 +352,38 @@ local function Hook()
         end)
     end
 end
+
+-- /everlake prof page: the art of the client's first primary section (it is hidden under the list, but kept), to match
+-- its look: every texture with atlas or file, layer and size, through its child frames and status bar.
+local function DumpPage()
+    local _, _, p1 = PageParts()
+    if not p1 then print("No PrimaryProfession1 in this client.") return end
+    local function tex(r)
+        local atlas = r.GetAtlas and r:GetAtlas()
+        local w, h = r:GetSize()
+        local point, rel, relPoint, x, y = r:GetPoint(1)
+        return string.format("%s %s %dx%d @%s %d,%d", r:GetDrawLayer() or "?", atlas and ("atlas " .. atlas) or tostring(r:GetTexture()),
+            w or 0, h or 0, point or "-", x or 0, y or 0)
+    end
+    local function key(parent, child)
+        for k, v in pairs(parent) do if v == child and type(k) == "string" then return k end end
+        return child:GetName() or child:GetObjectType()
+    end
+    local function walk(frame, depth, label)
+        if depth > 3 then return end
+        local w, h = frame:GetSize()
+        print(string.rep(" ", depth) .. label .. string.format(" (%s %dx%d)", frame:GetObjectType(), w or 0, h or 0))
+        if frame.GetStatusBarTexture and frame:GetStatusBarTexture() then
+            print(string.rep(" ", depth + 1) .. "bar: " .. tex(frame:GetStatusBarTexture()))
+        end
+        for _, r in ipairs({ frame:GetRegions() }) do
+            if r:GetObjectType() == "Texture" and (r:GetAtlas() or r:GetTexture()) then print(string.rep(" ", depth + 1) .. tex(r)) end
+        end
+        for _, c in ipairs({ frame:GetChildren() }) do walk(c, depth + 1, key(frame, c)) end
+    end
+    walk(p1, 0, "PrimaryProfession1")
+end
+addon.DumpProfessionPage = DumpPage
 
 local events = CreateFrame("Frame")
 for _, e in ipairs({ "PLAYER_LOGIN", "ADDON_LOADED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED",

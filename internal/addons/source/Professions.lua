@@ -406,6 +406,10 @@ function addon.ProfessionsCommand(arg)
         print("Everlake: professions panel " .. (EverlakeDB.professionsWithSpellbook and "opens" or "no longer opens") .. " with the spellbook.")
         return
     end
+    if arg == "page" then   -- the art of the client's Professions page sections (Overview.lua)
+        if addon.DumpProfessionPage then pcall(addon.DumpProfessionPage) end
+        return
+    end
     if arg == "frame" then   -- which profession window this client has, for bug reports
         for _, name in ipairs({ "ProfessionsFrame", "TradeSkillFrame", "CraftFrame", "SpellBookFrame", "PlayerSpellsFrame", "ProfessionsBookFrame", "PrimaryProfession1", "PrimaryProfession2", "SecondaryProfession1" }) do
             local f = _G[name]
