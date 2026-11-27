@@ -580,6 +580,23 @@ local function FillPrimary(f, entry, spells, p1)
     -- the client's empty primary card (its free second slot) has the cards' rounded border and no profession picture:
     -- the secondary rows' panel when it could be read
     local emptyCard = secondary and art and art.emptyCard and TrySetAtlas(f.card, art.emptyCard)
+    -- with no empty card to read (both slots used), a primary card for its rounded border, its own picture hidden
+    -- under an opaque panel in the cards' brown just inside the border
+    local borrowed = false
+    if secondary and not emptyCard and art and art.cardName then
+        borrowed = TrySetAtlas(f.card, "Profession-overview-Card-" .. art.cardName)
+        if borrowed then
+            if type(f.cover) ~= "table" then
+                f.cover = f:CreateTexture(nil, "BACKGROUND", nil, 2)
+                f.cover:SetPoint("TOPLEFT", 6, -6)
+                f.cover:SetPoint("BOTTOMRIGHT", -6, 6)
+                f.cover:SetColorTexture(0.11, 0.08, 0.05, 1)
+            end
+            f.cover:Show()
+            emptyCard = true   -- from here on the same as the empty card
+        end
+    end
+    if not borrowed and type(f.cover) == "table" then f.cover:Hide() end
     if emptyCard then
         hasCard = true
         f.card:Show()
