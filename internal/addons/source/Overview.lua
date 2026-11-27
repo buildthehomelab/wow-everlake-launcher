@@ -26,6 +26,23 @@ local ATLAS_NAME = {
     [185] = "Cooking", [356] = "Fishing", [129] = "FirstAid",
 }
 
+local secondaryArt   -- the client's secondary card atlases by profession name (read with the page)
+
+-- SetAtlas on 1.60 does not say when an atlas is missing (a missing card drew nothing at all): read it back instead
+local function TrySetAtlas(texture, atlas)
+    if not (texture and atlas) then return false end
+    texture:SetAtlas(atlas)
+    return texture:GetAtlas() == atlas
+end
+
+-- the rank a spell shows in the client (its subtext: Apprentice, Journeyman, ...)
+local function SpellRank(id)
+    local text
+    if C_Spell and C_Spell.GetSpellSubtext then text = C_Spell.GetSpellSubtext(id)
+    elseif GetSpellSubtext then text = GetSpellSubtext(id) end
+    if text and text ~= "" then return text end
+end
+
 local function RankTitle(maxRank)
     if not maxRank or maxRank <= 0 then return "" end
     if maxRank <= 75 then return "Apprentice" elseif maxRank <= 150 then return "Journeyman"
@@ -154,9 +171,9 @@ local function SpellButton(parent)
     b.slot = b:CreateTexture(nil, "OVERLAY")
     b.slot:SetSize(40, 40)
     b.slot:SetPoint("TOPLEFT")
-    if b.slot:SetAtlas("Professions-Slot-Frame") ~= false then
+    if TrySetAtlas(b.slot, "Professions-Slot-Frame") then
         b.back:Hide()
-        if b.shadow:SetAtlas("UI-HUD-ActionBar-IconFrame-FlyoutBorderShadow") == false then b.shadow:Hide() end
+        if not TrySetAtlas(b.shadow, "UI-HUD-ActionBar-IconFrame-FlyoutBorderShadow") then b.shadow:Hide() end
     else
         b.slot:Hide()
         b.shadow:Hide()
@@ -196,7 +213,7 @@ local function Bar(parent)
     bar.bg = bar:CreateTexture(nil, "BACKGROUND")
     bar.bg:SetPoint("TOPLEFT")
     bar.bg:SetSize(440, 22)
-    if bar.bg:SetAtlas("Profession-ProgressBar-BG") == false then
+    if not TrySetAtlas(bar.bg, "Profession-ProgressBar-BG") then
         bar.bg:ClearAllPoints()
         bar.bg:SetPoint("TOPLEFT", -1, 1)
         bar.bg:SetPoint("BOTTOMRIGHT", 1, -1)
@@ -210,7 +227,7 @@ end
 local function SetBar(bar, skill, name, rank, maxRank, fillAtlas)
     if rank and maxRank and maxRank > 0 then
         local fill = bar:GetStatusBarTexture()
-        if fillAtlas and fill and fill:SetAtlas(fillAtlas) ~= false then
+        if fillAtlas and fill and TrySetAtlas(fill, fillAtlas) then
             bar:SetStatusBarColor(1, 1, 1)
         else
             bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
@@ -361,7 +378,7 @@ local function ProfessionBar(parent, model)
     bar.bg = bar:CreateTexture(nil, "ARTWORK", nil, 0)
     bar.bg:SetSize(BAR_W, BAR_FRAME_H)
     bar.bg:SetPoint("TOPLEFT")
-    if bar.bg:SetAtlas("Profession-ProgressBar-BG") == false then bar:Hide() return nil end
+    if not TrySetAtlas(bar.bg, "Profession-ProgressBar-BG") then bar:Hide() return nil end
     bar.fill = bar:CreateTexture(nil, "ARTWORK", nil, 1)
     bar.fill:SetSize(FILL_W, BAR_H)
     bar.fill:SetPoint("TOPLEFT", 2, -3)
@@ -397,7 +414,7 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
     local flareAtlas = fillAtlas and fillAtlas:gsub("Fill_Flipbook", "Flare") or nil
     if not (rank and maxRank and maxRank > 0) then bar:Hide() return end
     -- a flipbook fill without its animation would show the whole sheet: then a plain coloured fill
-    local animated = bar.flipFill and fillAtlas and bar.fill:SetAtlas(fillAtlas) ~= false
+    local animated = bar.flipFill and fillAtlas and TrySetAtlas(bar.fill, fillAtlas)
     if not animated then
         bar.fill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
         local c = BAR_COLORS[skill] or { 0.9, 0.6, 0.1 }
@@ -405,13 +422,39 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
     else
         bar.fill:SetVertexColor(1, 1, 1)
     end
-    local hasFlare = flareAtlas and bar.flare:SetAtlas(flareAtlas) ~= false
+    local hasFlare = flareAtlas and TrySetAtlas(bar.flare, flareAtlas)
     local fraction = math.max(0, math.min(1, rank / maxRank))
-    bar.fill:SetWidth(math.max(1, FILL_W * fraction))
+    local width = math.max(1, FILL_W * fraction)
+    bar.fill:SetWidth(width)
     bar.fill:SetShown(fraction > 0)
-    bar.flare:SetShown(hasFlare and fraction > 0 and fraction < 1 and true or false)
+    -- the flare sits on the fill's right end; on a fill narrower than itself it would stick out left of the bar
+    bar.flare:SetShown(hasFlare and width >= 53 and fraction < 1 and true or false)
     bar.text:SetText(string.format("%s %d/%d", name or "", rank, maxRank))
     bar:Show()
+end
+
+-- the card atlases of the client's secondary sections, by the profession name each one shows
+local function ReadSecondaryArt(frames)
+    local found = {}
+    for _, frame in ipairs(frames) do
+        local name, atlas, w, h
+        local function walk(f2, depth)
+            if depth > 3 then return end
+            for _, r in ipairs({ f2:GetRegions() }) do
+                local kind = r.GetObjectType and r:GetObjectType()
+                if kind == "Texture" and not atlas and r:GetDrawLayer() == "BACKGROUND" and r:GetAtlas() then
+                    atlas = r:GetAtlas()
+                    w, h = r:GetSize()
+                elseif kind == "FontString" and not name and r:GetText() and r:GetText() ~= "" then
+                    name = r:GetText()
+                end
+            end
+            for _, c in ipairs({ f2:GetChildren() }) do walk(c, depth + 1) end
+        end
+        walk(frame, 0)
+        if name and atlas and w and h and w > 0 and h > 0 then found[name] = { atlas = atlas, w = w, h = h } end
+    end
+    return found
 end
 
 local list, content, page
@@ -446,6 +489,13 @@ end
 
 local function FillPrimary(f, entry, spells, p1)
     f.header:SetText(entry.name)
+    -- the profession's own spell first (the spellbook lists Bait and Tackle before Fishing)
+    table.sort(spells, function(a, b)
+        local an, bn = P.SpellNameIcon(a), P.SpellNameIcon(b)
+        local am, bm = an == entry.name, bn == entry.name
+        if am ~= bm then return am end
+        return false
+    end)
     for k = 1, math.max(#spells, #f.spells) do
         local b = f.spells[k]
         if spells[k] then
@@ -454,7 +504,7 @@ local function FillPrimary(f, entry, spells, p1)
                 b:SetPoint("TOPLEFT", 14, -54 - (k - 1) * SPELL_STEP)
                 f.spells[k] = b
             end
-            SetSpell(b, spells[k], k == 1 and RankTitle(entry.maxRank) or nil)
+            SetSpell(b, spells[k], SpellRank(spells[k]) or (k == 1 and RankTitle(entry.maxRank) or nil))
         elseif b then
             b:Hide()
         end
@@ -474,7 +524,21 @@ local function FillPrimary(f, entry, spells, p1)
         b:Show()
     end
     local card = ATLAS_NAME[entry.skill] and ("Profession-overview-Card-" .. ATLAS_NAME[entry.skill])
-    local hasCard = card and f.card:SetAtlas(card) ~= false
+    f.card:SetTexCoord(0, 1, 0, 1)
+    local hasCard = card and TrySetAtlas(f.card, card)
+    if not hasCard and entry.secondary and secondaryArt and secondaryArt[entry.name] then
+        local a = secondaryArt[entry.name]
+        hasCard = TrySetAtlas(f.card, a.atlas)
+        if hasCard then
+            -- the client's secondary card is tall (224x275): a band of it at the section's shape, from its lower part
+            -- where the art is
+            local ulx, uly, llx, lly, urx, ury, lrx, lry = f.card:GetTexCoord()
+            local left, right, top, bottom = ulx, urx, uly, lly
+            local h = math.min(1, (a.w / a.h) / (sectionW / math.max(1, f:GetHeight() or sectionH)))
+            local centre = math.min(1 - h / 2, math.max(h / 2, 0.68))
+            f.card:SetTexCoord(left, right, top + (centre - h / 2) * (bottom - top), top + (centre + h / 2) * (bottom - top))
+        end
+    end
     f.card:SetShown(hasCard and true or false)
     f.plain:SetShown(not hasCard)
     local model = art and p1 and BarModel(p1)
@@ -558,6 +622,7 @@ local function Refresh()
         end
     end
     ClientArt(p1)
+    if not secondaryArt or not next(secondaryArt) then secondaryArt = ReadSecondaryArt(secondaries) end
     local w, h = p1:GetSize()
     if w and w > 100 then sectionW = math.floor(w - 24) end
     if h and h > 60 then sectionH = math.floor(h) end
