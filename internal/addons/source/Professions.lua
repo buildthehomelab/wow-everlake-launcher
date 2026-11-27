@@ -254,7 +254,7 @@ end
 
 -- The client's side tabs (ProfessionsFrame, 1.60): a 55x54 frame with atlas common-sidetab behind a 50x50 icon,
 -- common-sidetab-selected over the open profession, common-sidetab-hover on mouse-over. Ours are built the same way.
-local SIDETAB_W, SIDETAB_H, SIDETAB_ART_H, SIDETAB_ICON = 55, 54, 59, 50
+local SIDETAB_W, SIDETAB_H, SIDETAB_ART_H, SIDETAB_ICON = 55, 54, 60, 50   -- from /everlake prof frame on 1.60
 
 local function Tab(window, i)
     tabs[window] = tabs[window] or {}
@@ -269,7 +269,7 @@ local function Tab(window, i)
     t.back:SetSize(SIDETAB_W, SIDETAB_ART_H)
     t.icon = t:CreateTexture(nil, "ARTWORK")
     t.icon:SetSize(SIDETAB_ICON, SIDETAB_ICON)
-    t.icon:SetPoint("CENTER")
+    t.icon:SetPoint("CENTER", -4, 0)   -- the client's icon sits 4 px left of centre
     t.selected = t:CreateTexture(nil, "OVERLAY")
     t.selected:SetPoint("CENTER")
     t.selected:SetSize(SIDETAB_W, SIDETAB_ART_H)

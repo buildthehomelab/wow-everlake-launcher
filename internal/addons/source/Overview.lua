@@ -297,111 +297,119 @@ local function FillAtlas(skill)
     return n > 0 and swapped or nil
 end
 
--- An exact copy of the client's profession bar (the StatusBar frame of its hidden first section): every texture and
--- child frame with its layer, size and anchors, the inner status bar as a real status bar, the profession's name
--- swapped in the atlases that carry it. A status bar lists its own fill among its regions; that one is not copied
--- (it would be a second, full width fill). Font strings are not copied: the copy has its own rank text.
+-- The client's profession bar (1.60, from /everlake prof bar): a 440x17 frame of four ARTWORK textures:
+-- Profession-ProgressBar-BG (440x22, top left), Skillbar_Fill_Flipbook_<profession> (440x17 at 2,-3, its width the rank),
+-- Skillbar_Flare_<profession> (53x15 on the fill's right end) and Profession-ProgressBar-frame (440x22, top left).
+-- The fill is a flipbook: the client plays it with a FlipBook animation, copied here from its own hidden bar (rows,
+-- columns, frames, duration) so ours plays the same; without one the sheet would show whole, as stripes.
+local BAR_W, BAR_H, BAR_FRAME_H, FILL_W = 440, 17, 22, 436
+
 local function BarModel(p1)
     if type(p1.StatusBar) == "table" and p1.StatusBar.GetRegions then return p1.StatusBar end
-    for _, c in ipairs({ p1:GetChildren() }) do
-        if c.IsObjectType and c:IsObjectType("StatusBar") then return c end
-    end
 end
 
-local function CloneBar(model, parent, p1)
-    local map, pairsList, bars, swaps = { [p1] = parent }, {}, {}, {}
-    local isBar = function(frame) return frame.IsObjectType and frame:IsObjectType("StatusBar") end
-    local root = CreateFrame(isBar(model) and "StatusBar" or "Frame", nil, parent)
-    map[model] = root
-    local function build(from, to, depth)
-        pairsList[#pairsList + 1] = { from, to }
-        local fill = isBar(from) and from:GetStatusBarTexture() or nil
-        if fill then
-            local atlas = fill:GetAtlas()
-            to:SetStatusBarTexture(atlas and "Interface\\Buttons\\WHITE8x8" or (fill:GetTexture() or "Interface\\TargetingFrame\\UI-StatusBar"))
-            if atlas then to:GetStatusBarTexture():SetAtlas(atlas) end
-            to:SetStatusBarColor(fill:GetVertexColor())
-            bars[#bars + 1] = { bar = to, atlas = atlas }
-        end
-        for _, r in ipairs({ from:GetRegions() }) do
-            if r ~= fill and r:GetObjectType() == "Texture" then
-                local c = to:CreateTexture(nil, r:GetDrawLayer())
-                map[r] = c
-                pairsList[#pairsList + 1] = { r, c }
-            end
-        end
-        if depth < 3 then
-            for _, child in ipairs({ from:GetChildren() }) do
-                local c = CreateFrame(isBar(child) and "StatusBar" or "Frame", nil, to)
-                c:SetFrameLevel(to:GetFrameLevel() + math.max(0, child:GetFrameLevel() - from:GetFrameLevel()))
-                map[child] = c
-                build(child, c, depth + 1)
+local flipbooks   -- { fill = {...}, flare = {...} } read once from the client's bar
+local function ReadFlipbooks(model)
+    if flipbooks then return flipbooks end
+    local found = {}
+    local function scan(frame)
+        if not frame.GetAnimationGroups then return end
+        for _, group in ipairs({ frame:GetAnimationGroups() }) do
+            for _, anim in ipairs({ group:GetAnimations() }) do
+                if anim:GetObjectType() == "FlipBook" then
+                    local target = anim:GetTarget()
+                    local atlas = target and target.GetAtlas and target:GetAtlas() or ""
+                    local which = atlas:find("Flare") and "flare" or (atlas:find("Fill") and "fill") or nil
+                    if which and not found[which] then
+                        found[which] = {
+                            rows = anim:GetFlipBookRows(), columns = anim:GetFlipBookColumns(), frames = anim:GetFlipBookFrames(),
+                            width = anim:GetFlipBookFrameWidth(), height = anim:GetFlipBookFrameHeight(),
+                            duration = anim:GetDuration(), looping = group:GetLooping(),
+                        }
+                    end
+                end
             end
         end
     end
-    build(model, root, 0)
-    for _, pair in ipairs(pairsList) do
-        local from, to = pair[1], pair[2]
-        local w, h = from:GetSize()
-        if w and w > 0 then to:SetSize(w, h) end
-        if from:GetNumPoints() > 0 then
-            to:ClearAllPoints()
-            for i = 1, from:GetNumPoints() do
-                local point, relative, relativePoint, x, y = from:GetPoint(i)
-                to:SetPoint(point, map[relative] or to:GetParent(), relativePoint, x, y)
-            end
-        elseif to ~= root then
-            to:SetAllPoints()
-        end
-        if from:GetObjectType() == "Texture" then
-            local atlas = from:GetAtlas()
-            if atlas then
-                to:SetAtlas(atlas)
-                swaps[#swaps + 1] = { tex = to, atlas = atlas }
-            elseif from:GetTexture() then
-                to:SetTexture(from:GetTexture())
-                to:SetTexCoord(from:GetTexCoord())
-            end
-            to:SetBlendMode(from:GetBlendMode())
-            to:SetVertexColor(from:GetVertexColor())
-            to:SetShown(from:IsShown())
-        end
-    end
-    if #bars == 0 then root:Hide() return nil end
-    local textHolder = CreateFrame("Frame", nil, root)
-    textHolder:SetAllPoints(bars[1].bar)
-    textHolder:SetFrameLevel(root:GetFrameLevel() + 10)
-    root.text = textHolder:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    root.text:SetPoint("CENTER")
-    root.bars, root.swaps, root.cloned = bars, swaps, true
-    return root
+    scan(model)
+    for _, child in ipairs({ model:GetChildren() }) do scan(child) end
+    if model:GetParent() then scan(model:GetParent()) end
+    flipbooks = found
+    return found
 end
 
--- one profession on a cloned bar: values, and its own name in the atlases that named the client's profession
-local function SetClonedBar(root, skill, name, rank, maxRank)
+local function PlayFlipbook(owner, texture, fb)
+    local group = owner:CreateAnimationGroup()
+    local anim = group:CreateAnimation("FlipBook")
+    anim:SetTarget(texture)
+    anim:SetFlipBookRows(fb.rows or 1)
+    anim:SetFlipBookColumns(fb.columns or 1)
+    anim:SetFlipBookFrames(fb.frames or 1)
+    anim:SetFlipBookFrameWidth(fb.width or 0)
+    anim:SetFlipBookFrameHeight(fb.height or 0)
+    anim:SetDuration(fb.duration or 1)
+    group:SetLooping((fb.looping and fb.looping ~= "NONE") and fb.looping or "REPEAT")
+    group:Play()
+    return group
+end
+
+local function ProfessionBar(parent, model)
+    local bar = CreateFrame("Frame", nil, parent)
+    bar:SetSize(BAR_W, BAR_H)
+    bar.bg = bar:CreateTexture(nil, "ARTWORK", nil, 0)
+    bar.bg:SetSize(BAR_W, BAR_FRAME_H)
+    bar.bg:SetPoint("TOPLEFT")
+    if bar.bg:SetAtlas("Profession-ProgressBar-BG") == false then bar:Hide() return nil end
+    bar.fill = bar:CreateTexture(nil, "ARTWORK", nil, 1)
+    bar.fill:SetSize(FILL_W, BAR_H)
+    bar.fill:SetPoint("TOPLEFT", 2, -3)
+    bar.flare = bar:CreateTexture(nil, "ARTWORK", nil, 2)
+    bar.flare:SetSize(53, 15)
+    bar.flare:SetPoint("RIGHT", bar.fill, "RIGHT")
+    bar.frame = bar:CreateTexture(nil, "ARTWORK", nil, 3)
+    bar.frame:SetSize(BAR_W, BAR_FRAME_H)
+    bar.frame:SetPoint("TOPLEFT")
+    bar.frame:SetAtlas("Profession-ProgressBar-frame")
+    local textHolder = CreateFrame("Frame", nil, bar)
+    textHolder:SetAllPoints()
+    textHolder:SetFrameLevel(bar:GetFrameLevel() + 5)
+    bar.text = textHolder:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bar.text:SetPoint("CENTER", 0, -2)
+    local fb = ReadFlipbooks(model)
+    bar.flipFill = fb.fill
+    if fb.fill then PlayFlipbook(bar, bar.fill, fb.fill) end
+    if fb.flare then PlayFlipbook(bar, bar.flare, fb.flare) end
+    bar.isProfessionBar = true
+    return bar
+end
+
+-- one profession on the bar: its own fill and flare (the name swapped in the client's atlas names), width = rank
+local function SetProfessionBar(bar, skill, name, rank, maxRank)
     local mine = ATLAS_NAME[skill]
-    local function swapped(atlas)
-        if not (atlas and art and art.cardName and mine) then return atlas end
-        local s2 = atlas:gsub(art.cardName, mine)
-        return s2
+    local client = art and art.cardName
+    local function own(atlas)
+        if not (atlas and client and mine) then return atlas end
+        return (atlas:gsub(client, mine))
     end
-    for _, sw in ipairs(root.swaps) do
-        if sw.tex:SetAtlas(swapped(sw.atlas)) == false then sw.tex:SetAtlas(sw.atlas) end
-    end
-    if rank and maxRank and maxRank > 0 then
-        for _, b in ipairs(root.bars) do
-            b.bar:SetMinMaxValues(0, maxRank)
-            b.bar:SetValue(rank)
-            if b.atlas then
-                local fill = b.bar:GetStatusBarTexture()
-                if fill and fill:SetAtlas(swapped(b.atlas)) == false then fill:SetAtlas(b.atlas) end
-            end
-        end
-        root.text:SetText(string.format("%s %d/%d", name or "", rank, maxRank))
-        root:Show()
+    local fillAtlas = art and art.fill and own(art.fill) or nil
+    local flareAtlas = fillAtlas and fillAtlas:gsub("Fill_Flipbook", "Flare") or nil
+    if not (rank and maxRank and maxRank > 0) then bar:Hide() return end
+    -- a flipbook fill without its animation would show the whole sheet: then a plain coloured fill
+    local animated = bar.flipFill and fillAtlas and bar.fill:SetAtlas(fillAtlas) ~= false
+    if not animated then
+        bar.fill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+        local c = BAR_COLORS[skill] or { 0.9, 0.6, 0.1 }
+        bar.fill:SetVertexColor(c[1], c[2], c[3])
     else
-        root:Hide()
+        bar.fill:SetVertexColor(1, 1, 1)
     end
+    local hasFlare = flareAtlas and bar.flare:SetAtlas(flareAtlas) ~= false
+    local fraction = math.max(0, math.min(1, rank / maxRank))
+    bar.fill:SetWidth(math.max(1, FILL_W * fraction))
+    bar.fill:SetShown(fraction > 0)
+    bar.flare:SetShown(hasFlare and fraction > 0 and fraction < 1 and true or false)
+    bar.text:SetText(string.format("%s %d/%d", name or "", rank, maxRank))
+    bar:Show()
 end
 
 local list, content, page
@@ -427,7 +435,7 @@ local function PrimarySection(i)
         sections[i] = f
     end
     f:SetWidth(sectionW)
-    if f.bar.cloned ~= true then   -- a cloned bar keeps the client's own place in the section
+    if f.bar.isProfessionBar ~= true then   -- the profession bar keeps the client's own place in the section
         f.bar:ClearAllPoints()
         f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.min(math.floor(sectionW * 0.32), sectionW - 440 - 44), -66)
     end
@@ -468,19 +476,23 @@ local function FillPrimary(f, entry, spells, p1)
     f.card:SetShown(hasCard and true or false)
     f.plain:SetShown(not hasCard)
     local model = art and p1 and BarModel(p1)
-    if model and not f.cloneTried then
-        f.cloneTried = true
-        local ok, clone = pcall(CloneBar, model, f, p1)
-        if ok and clone then
+    if model and not f.profBarTried then
+        f.profBarTried = true
+        local ok, bar = pcall(ProfessionBar, f, model)
+        if ok and bar then
+            -- the client's place for its bar in a section
+            local point, relative, relativePoint, x, y = model:GetPoint(1)
+            bar:ClearAllPoints()
+            if point then bar:SetPoint(point, relative == p1 and f or f, relativePoint, x, y) else bar:SetPoint("TOPLEFT", f, "TOPLEFT", 200, -66) end
             f.plainBar = f.bar
             f.plainBar:Hide()
-            f.bar = clone
+            f.bar = bar
             f.unlearn:ClearAllPoints()
-            f.unlearn:SetPoint("LEFT", clone, "RIGHT", 6, 0)
+            f.unlearn:SetPoint("LEFT", bar, "RIGHT", 6, -2)
         end
     end
-    if f.bar.cloned == true then
-        SetClonedBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank)
+    if f.bar.isProfessionBar == true then
+        SetProfessionBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank)
     else
         SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank, FillAtlas(entry.skill))
     end
