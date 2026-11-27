@@ -532,6 +532,32 @@ local function FillPrimary(f, entry, spells, p1)
     -- (Texture coordinates cannot cut an atlas here: they covered the whole sheet.)
     local secondary = not hasCard and entry.secondary and secondaryArt and secondaryArt[entry.name]
     if secondary then
+        -- the primary cards' warm dark brown and thin gold edge, over the plain inset
+        if type(f.warm) ~= "table" then
+            f.warm = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+            f.warm:SetPoint("TOPLEFT", 3, -3)
+            f.warm:SetPoint("BOTTOMRIGHT", -3, 3)
+            f.warm:SetColorTexture(0.11, 0.08, 0.05, 1)
+            f.edge = {}
+            for i, side in ipairs({ { "TOPLEFT", "TOPRIGHT" }, { "BOTTOMLEFT", "BOTTOMRIGHT" } }) do
+                local line = f:CreateTexture(nil, "BORDER")
+                line:SetPoint(side[1], i == 1 and 3 or 3, i == 1 and -3 or 3)
+                line:SetPoint(side[2], -3, i == 1 and -3 or 3)
+                line:SetHeight(1)
+                line:SetColorTexture(0.55, 0.42, 0.2, 0.8)
+                f.edge[#f.edge + 1] = line
+            end
+            for i, side in ipairs({ { "TOPLEFT", "BOTTOMLEFT" }, { "TOPRIGHT", "BOTTOMRIGHT" } }) do
+                local line = f:CreateTexture(nil, "BORDER")
+                line:SetPoint(side[1], i == 1 and 3 or -3, -3)
+                line:SetPoint(side[2], i == 1 and 3 or -3, 3)
+                line:SetWidth(1)
+                line:SetColorTexture(0.55, 0.42, 0.2, 0.8)
+                f.edge[#f.edge + 1] = line
+            end
+        end
+        f.warm:Show()
+        for _, line in ipairs(f.edge) do line:Show() end
         if type(f.artClip) ~= "table" then
             f.artClip = CreateFrame("Frame", nil, f)
             f.artClip:SetPoint("TOPRIGHT", -4, -4)
@@ -546,7 +572,7 @@ local function FillPrimary(f, entry, spells, p1)
             f.artFade:SetWidth(60)
             f.artFade:SetColorTexture(1, 1, 1, 1)
             pcall(function()
-                f.artFade:SetGradient("HORIZONTAL", CreateColor(0.06, 0.05, 0.04, 1), CreateColor(0.06, 0.05, 0.04, 0))
+                f.artFade:SetGradient("HORIZONTAL", CreateColor(0.11, 0.08, 0.05, 1), CreateColor(0.11, 0.08, 0.05, 0))
             end)
         end
         if TrySetAtlas(f.secArt, secondary.atlas) then
@@ -554,13 +580,17 @@ local function FillPrimary(f, entry, spells, p1)
             f.secArt:SetSize(secondary.w * scale, secondary.h * scale)
             f.secArt:ClearAllPoints()
             f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 12, -14)
-            f.secArt:SetAlpha(0.6)
+            f.secArt:SetAlpha(0.85)
             f.artClip:Show()
         else
             f.artClip:Hide()
         end
     elseif type(f.artClip) == "table" then
         f.artClip:Hide()
+    end
+    if not secondary and type(f.warm) == "table" then
+        f.warm:Hide()
+        for _, line in ipairs(f.edge) do line:Hide() end
     end
     f.card:SetShown(hasCard and true or false)
     f.plain:SetShown(not hasCard)
