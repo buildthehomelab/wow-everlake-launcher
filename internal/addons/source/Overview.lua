@@ -791,7 +791,9 @@ local function FillPrimary(f, entry, spells, p1)
         if art.crossHighlight then f.unlearn:SetHighlightAtlas(art.crossHighlight, "ADD") end
     end
     f.unlearn.skill, f.unlearn.profession = entry.skill, entry.name
-    f.unlearn:SetShown(f.bar:IsShown() and not entry.secondary)   -- no X for Cooking, Fishing, First Aid (nor on the client's page)
+    -- no unlearn X: every profession can be learned on Everlake, so it only risked losing skill by a stray click
+    -- (a trainer still unlearns)
+    f.unlearn:Hide()
     local height = math.max(sectionH, 54 + math.max(1, #spells) * SPELL_STEP + 4)
     f:SetHeight(height)
     f:Show()
