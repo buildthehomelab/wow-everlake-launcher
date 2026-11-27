@@ -468,9 +468,12 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
     if not (rank and maxRank and maxRank > 0) then bar:Hide() return end
     -- a flipbook fill without its animation would show the whole sheet: then a plain coloured fill
     local animated = bar.flipFill and fillAtlas and TrySetAtlas(bar.fill, fillAtlas)
-    if animated and bar.fillAtlasPlayed ~= fillAtlas then   -- this profession's own sheet layout
-        bar.fillAtlasPlayed = fillAtlas
-        ApplyFlipbook(bar.fillAnim, bar.fillGroup, FlipbookFor(fillAtlas, bar.flipFill))
+    -- this profession's own sheet layout; again whenever a layout for it has been learned since (Enchanting's 37x2
+    -- arrived only once its crafting window was opened, and the bar kept playing the 30x2 default)
+    local fillLayout = animated and FlipbookFor(fillAtlas, bar.flipFill)
+    if fillLayout and (bar.fillAtlasPlayed ~= fillAtlas or bar.fillLayoutPlayed ~= fillLayout) then
+        bar.fillAtlasPlayed, bar.fillLayoutPlayed = fillAtlas, fillLayout
+        ApplyFlipbook(bar.fillAnim, bar.fillGroup, fillLayout)
     end
     if not animated then
         bar.fill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
@@ -480,9 +483,10 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
         bar.fill:SetVertexColor(1, 1, 1)
     end
     local hasFlare = flareAtlas and TrySetAtlas(bar.flare, flareAtlas)
-    if hasFlare and bar.flareAtlasPlayed ~= flareAtlas then
-        bar.flareAtlasPlayed = flareAtlas
-        ApplyFlipbook(bar.flareAnim, bar.flareGroup, FlipbookFor(flareAtlas, bar.flipFlare))
+    local flareLayout = hasFlare and FlipbookFor(flareAtlas, bar.flipFlare)
+    if flareLayout and (bar.flareAtlasPlayed ~= flareAtlas or bar.flareLayoutPlayed ~= flareLayout) then
+        bar.flareAtlasPlayed, bar.flareLayoutPlayed = flareAtlas, flareLayout
+        ApplyFlipbook(bar.flareAnim, bar.flareGroup, flareLayout)
     end
     local fraction = math.max(0, math.min(1, rank / maxRank))
     local width = math.max(1, FILL_W * fraction)
