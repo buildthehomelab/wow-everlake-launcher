@@ -18,6 +18,12 @@ local BAR_COLORS = {
     [185] = { 0.85, 0.8, 0.65 }, [356] = { 0.3, 0.45, 0.85 }, [129] = { 0.45, 0.85, 0.1 },
 }
 
+-- English names in the client's per-profession atlases (Profession-overview-Card-Blacksmithing, ...)
+local ATLAS_NAME = {
+    [171] = "Alchemy", [164] = "Blacksmithing", [333] = "Enchanting", [202] = "Engineering", [773] = "Inscription",
+    [755] = "Jewelcrafting", [165] = "Leatherworking", [197] = "Tailoring", [186] = "Mining", [182] = "Herbalism", [393] = "Skinning",
+}
+
 local function RankTitle(maxRank)
     if not maxRank or maxRank <= 0 then return "" end
     if maxRank <= 75 then return "Apprentice" elseif maxRank <= 150 then return "Journeyman"
@@ -137,9 +143,23 @@ local function SpellButton(parent)
     b.back:SetPoint("TOPLEFT", -2, 2)
     b.back:SetPoint("BOTTOMRIGHT", 2, -2)
     b.back:SetColorTexture(0, 0, 0, 0.9)
-    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon = b:CreateTexture(nil, "BORDER")
     b.icon:SetAllPoints()
-    b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    -- the client's profession spell button: a shadow round the icon and the profession slot frame over it
+    b.shadow = b:CreateTexture(nil, "ARTWORK")
+    b.shadow:SetSize(48, 48)
+    b.shadow:SetPoint("TOPLEFT", -4, 4)
+    b.slot = b:CreateTexture(nil, "OVERLAY")
+    b.slot:SetSize(40, 40)
+    b.slot:SetPoint("TOPLEFT")
+    if b.slot:SetAtlas("Professions-Slot-Frame") ~= false then
+        b.back:Hide()
+        if b.shadow:SetAtlas("UI-HUD-ActionBar-IconFrame-FlyoutBorderShadow") == false then b.shadow:Hide() end
+    else
+        b.slot:Hide()
+        b.shadow:Hide()
+        b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    end
     b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
     b.label = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     b.label:SetPoint("TOPLEFT", b, "TOPRIGHT", 8, -4)
@@ -169,21 +189,32 @@ end
 
 local function Bar(parent)
     local bar = CreateFrame("StatusBar", nil, parent)
-    bar:SetHeight(20)
+    bar:SetSize(440, 17)   -- the client's profession bar
     bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
     bar.bg = bar:CreateTexture(nil, "BACKGROUND")
-    bar.bg:SetPoint("TOPLEFT", -1, 1)
-    bar.bg:SetPoint("BOTTOMRIGHT", 1, -1)
-    bar.bg:SetColorTexture(0, 0, 0, 0.9)
+    bar.bg:SetPoint("TOPLEFT")
+    bar.bg:SetSize(440, 22)
+    if bar.bg:SetAtlas("Profession-ProgressBar-BG") == false then
+        bar.bg:ClearAllPoints()
+        bar.bg:SetPoint("TOPLEFT", -1, 1)
+        bar.bg:SetPoint("BOTTOMRIGHT", 1, -1)
+        bar.bg:SetColorTexture(0, 0, 0, 0.9)
+    end
     bar.text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     bar.text:SetPoint("CENTER")
     return bar
 end
 
-local function SetBar(bar, skill, name, rank, maxRank)
+local function SetBar(bar, skill, name, rank, maxRank, fillAtlas)
     if rank and maxRank and maxRank > 0 then
-        local c = BAR_COLORS[skill] or { 0.9, 0.6, 0.1 }
-        bar:SetStatusBarColor(c[1], c[2], c[3])
+        local fill = bar:GetStatusBarTexture()
+        if fillAtlas and fill and fill:SetAtlas(fillAtlas) ~= false then
+            bar:SetStatusBarColor(1, 1, 1)
+        else
+            bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+            local c = BAR_COLORS[skill] or { 0.9, 0.6, 0.1 }
+            bar:SetStatusBarColor(c[1], c[2], c[3])
+        end
         bar:SetMinMaxValues(0, maxRank)
         bar:SetValue(rank)
         bar.text:SetText(string.format("%s %d/%d", name or "", rank, maxRank))
@@ -211,6 +242,48 @@ local function UnlearnButton(parent)
     return b
 end
 
+-- Art the client's own (hidden) first section carries, read at run time: its profession card names the profession it
+-- shows (Profession-overview-Card-<name>); its bar fill and red X atlases are reused, the fill with the name swapped.
+local art
+local function ClientArt(p1)
+    if art then return art end
+    local found = { cross = {} }
+    local function walk(frame, depth)
+        if depth > 4 then return end
+        if frame.GetStatusBarTexture then
+            local t = frame:GetStatusBarTexture()
+            local a = t and t.GetAtlas and t:GetAtlas()
+            if a then found.fill = found.fill or a end
+        end
+        for _, r in ipairs({ frame:GetRegions() }) do
+            local a = r.GetObjectType and r:GetObjectType() == "Texture" and r:GetAtlas()
+            if a then
+                local card = a:match("^Profession%-overview%-Card%-(.+)$")
+                if card then found.cardName = card end
+                if a:find("crossmark", 1, true) then found.cross[#found.cross + 1] = a end
+            end
+        end
+        for _, c in ipairs({ frame:GetChildren() }) do walk(c, depth + 1) end
+    end
+    walk(p1, 0)
+    if not found.cardName then return nil end   -- the client has not filled its section yet: try again later
+    for _, a in ipairs(found.cross) do
+        if a:find("%-pressed$") then found.crossPushed = a
+        elseif a:find("%-highlight$") or a:find("%-hover$") then found.crossHighlight = a
+        elseif not a:find("%-disabled$") then found.crossNormal = found.crossNormal or a end
+    end
+    if not found.crossNormal and found.crossPushed then found.crossNormal = found.crossPushed:gsub("%-pressed$", "") end
+    art = found
+    return art
+end
+
+local function FillAtlas(skill)
+    local name = ATLAS_NAME[skill]
+    if not (art and art.fill and art.cardName and name) then return nil end
+    local swapped, n = art.fill:gsub(art.cardName, name)
+    return n > 0 and swapped or nil
+end
+
 local list, content, page
 local sections = {}
 local SECTION_GAP, SPELL_STEP = 6, 46
@@ -219,7 +292,12 @@ local sectionW, sectionH = 663, 142
 local function PrimarySection(i)
     local f = sections[i]
     if not f then
-        f = Panel(content)
+        f = CreateFrame("Frame", nil, content)
+        f.card = f:CreateTexture(nil, "BACKGROUND")
+        f.card:SetAllPoints()
+        f.plain = Panel(f)   -- when the client has no card for this profession
+        f.plain:SetAllPoints()
+        f.plain:SetFrameLevel(f:GetFrameLevel())
         f.header = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         f.header:SetPoint("TOPLEFT", 18, -26)
         f.spells = {}
@@ -230,8 +308,7 @@ local function PrimarySection(i)
     end
     f:SetWidth(sectionW)
     f.bar:ClearAllPoints()
-    f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.floor(sectionW * 0.32), -70)
-    f.bar:SetPoint("RIGHT", f, "RIGHT", -44, 0)
+    f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.min(math.floor(sectionW * 0.32), sectionW - 440 - 44), -66)
     return f
 end
 
@@ -264,7 +341,18 @@ local function FillPrimary(f, entry, spells)
         b.sub:SetText(RankTitle(entry.maxRank))
         b:Show()
     end
-    SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank)
+    local card = ATLAS_NAME[entry.skill] and ("Profession-overview-Card-" .. ATLAS_NAME[entry.skill])
+    local hasCard = card and f.card:SetAtlas(card) ~= false
+    f.card:SetShown(hasCard and true or false)
+    f.plain:SetShown(not hasCard)
+    SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank, FillAtlas(entry.skill))
+    if art and art.crossNormal and not f.unlearn.clientArt then   -- the client's red X
+        f.unlearn.clientArt = true
+        f.unlearn:SetSize(21, 21)
+        f.unlearn:SetNormalAtlas(art.crossNormal)
+        if art.crossPushed then f.unlearn:SetPushedAtlas(art.crossPushed) end
+        if art.crossHighlight then f.unlearn:SetHighlightAtlas(art.crossHighlight, "ADD") end
+    end
     f.unlearn.skill, f.unlearn.profession = entry.skill, entry.name
     f.unlearn:SetShown(f.bar:IsShown())
     local height = math.max(sectionH, 54 + math.max(1, #spells) * SPELL_STEP + 4)
@@ -307,6 +395,7 @@ local function Refresh()
             end)
         end
     end
+    ClientArt(p1)
     local w, h = p1:GetSize()
     if w and w > 100 then sectionW = math.floor(w - 24) end
     if h and h > 60 then sectionH = math.floor(h) end
