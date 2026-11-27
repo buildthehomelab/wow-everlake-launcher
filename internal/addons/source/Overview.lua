@@ -623,13 +623,17 @@ local function FillPrimary(f, entry, spells, p1)
         end
         local craft = CraftArt(entry.skill)
         if craft and TrySetAtlas(f.secArt, craft.atlas) then
-            -- the crafting window's picture has no frame: as tall as the section and a bit more, from the bottom
-            local height = (f:GetHeight() or sectionH) * 1.25
-            f.secArt:SetSize(craft.w * height / craft.h, height)
+            -- the crafting window's card (Profession-background-card-<name>, 359x484): tall, its picture in the lower
+            -- part. Scaled to ~400 wide, its bottom border and right edge pushed outside the clip, the lower part
+            -- showing; a wide fade on the left so its lighter background meets the panel without a seam.
+            local width = 400
+            local height = craft.h * width / craft.w
+            f.secArt:SetSize(width, height)
             f.secArt:ClearAllPoints()
-            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 0, -8)
-            f.secArt:SetAlpha(0.9)
-            f.artClip:SetWidth(math.min(sectionW * 0.6, craft.w * height / craft.h))
+            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 12, -36)
+            f.secArt:SetAlpha(1)
+            f.artClip:SetWidth(math.min(sectionW * 0.62, width - 24))
+            f.artFade:SetWidth(120)
             f.artClip:Show()
         elseif TrySetAtlas(f.secArt, secondary.atlas) then
             local scale = 1.2
