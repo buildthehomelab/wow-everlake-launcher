@@ -232,8 +232,9 @@ local function DumpTab(tab)
     local function tex(r)
         local atlas = r.GetAtlas and r:GetAtlas()
         local w, h = r:GetSize()
-        return string.format("%s %s %dx%d%s", r:GetDrawLayer() or "?", atlas and ("atlas " .. atlas) or tostring(r:GetTexture()),
-            w or 0, h or 0, r:IsShown() and "" or " hidden")
+        local pt, rel, rp, x, y = r:GetPoint(1)
+        return string.format("%s %s %dx%d %s>%s %d,%d%s", r:GetDrawLayer() or "?", atlas and ("atlas " .. atlas) or tostring(r:GetTexture()),
+            w or 0, h or 0, pt or "-", rp or "-", x or 0, y or 0, r:IsShown() and "" or " hidden")
     end
     print(string.format("tab %s (%s) %dx%d", tab:GetName() or "unnamed", tab:GetObjectType(), tab:GetWidth(), tab:GetHeight()))
     for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetCheckedTexture", "GetHighlightTexture" }) do

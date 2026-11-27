@@ -628,7 +628,12 @@ local function DumpBar()
             end
             for _, r in ipairs({ frame:GetRegions() }) do
                 if r:GetObjectType() == "Texture" then
-                    print(string.rep(" ", depth + 1) .. (r:GetDrawLayer() or "?") .. " " .. tostring(r:GetAtlas() or r:GetTexture()))
+                    local w, h = r:GetSize()
+                    local pt, rel, rp, x, y = r:GetPoint(1)
+                    local relName = rel == frame and "parent" or (rel and (rel.GetName and rel:GetName()) or "other") or "-"
+                    print(string.rep(" ", depth + 1) .. string.format("%s %s %dx%d %s>%s %s %d,%d %s", r:GetDrawLayer() or "?",
+                        tostring(r:GetAtlas() or r:GetTexture()), w or 0, h or 0, pt or "-", rp or "-", relName, x or 0, y or 0,
+                        r:IsShown() and "" or "hidden"))
                 end
             end
         end
