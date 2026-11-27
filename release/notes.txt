@@ -1,7 +1,7 @@
 Regular launcher update for Windows and macOS, delivered through the launcher's own updater.
 
-The Everlake addon the launcher installs now has its own Professions window. The game's Professions page could only show the professions in its own two slots. Whenever the game opens that page (its side tab or key), the Everlake window opens in its place, in the game's style: a scrolling list of every primary profession you know, each with its spells, rank, rank bar and the red X to unlearn it (with a confirmation), above Cooking, Fishing and First Aid. Pressing the key or the tab again closes it. In combat the game's own page opens instead. The game's Professions side tab is back; alpha.9 had hidden it.
+Play now brings the Everlake addon up to date before the game starts. Until now the launcher wrote the addon only on Install, so after a launcher update the game kept the previous addon until the next Install (alpha.10's Professions window did not show for players who only pressed Play). When the addon is already current, Play writes nothing; an older copy is kept in .everlake\addon-backups. A folder named Everlake that the launcher did not make is left alone, with a note in the log.
 
-Validation: Windows, Linux and macOS test suites, and a run of the addon against stand-in game functions. The new window has not been seen in game yet.
+Validation: Windows, Linux and macOS test suites, including a test that an older addon is refreshed and an unmanaged folder left alone. Not yet tried on a player's PC.
 
 Windows executables are unsigned; the Mac app is ad-hoc signed and not notarized. Both platforms and SHA256SUMS.txt are included.
