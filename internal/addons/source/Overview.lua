@@ -606,7 +606,7 @@ local function FillPrimary(f, entry, spells, p1)
             for _, line in ipairs(f.edge) do line:Hide() end
         end
     end
-    if secondary and not emptyCard then
+    if secondary and not emptyCard then   -- the square panel only without a card
         -- the primary cards' warm dark brown and thin gold edge, over the plain inset
         if type(f.warm) ~= "table" then
             f.warm = f:CreateTexture(nil, "BACKGROUND", nil, 1)
@@ -633,10 +633,12 @@ local function FillPrimary(f, entry, spells, p1)
         end
         f.warm:Show()
         for _, line in ipairs(f.edge) do line:Show() end
+    end
+    if secondary then
         if type(f.artClip) ~= "table" then
             f.artClip = CreateFrame("Frame", nil, f)
-            f.artClip:SetPoint("TOPRIGHT", -4, -4)
-            f.artClip:SetPoint("BOTTOMRIGHT", -4, 4)
+            f.artClip:SetPoint("TOPRIGHT", -7, -7)   -- inside the card's rounded border
+            f.artClip:SetPoint("BOTTOMRIGHT", -7, 7)
             f.artClip:SetWidth(250)
             if f.artClip.SetClipsChildren then f.artClip:SetClipsChildren(true) end
             f.artClip:SetFrameLevel(f:GetFrameLevel() + 1)
