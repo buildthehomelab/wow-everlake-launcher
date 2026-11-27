@@ -488,8 +488,8 @@ function addon.ProfessionsCommand(arg)
         if addon.DumpProfessionBar then pcall(addon.DumpProfessionBar) end
         return
     end
-    if arg == "page" then   -- the art of the client's Professions page sections (Overview.lua)
-        if addon.DumpProfessionPage then pcall(addon.DumpProfessionPage) end
+    if arg == "page" or arg == "page 2" then   -- the art of the client's Professions page sections (Overview.lua)
+        if addon.DumpProfessionPage then pcall(addon.DumpProfessionPage, arg == "page 2" and 2 or 1) end
         return
     end
     if arg == "frame" then   -- which profession window this client has, for bug reports

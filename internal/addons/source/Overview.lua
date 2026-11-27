@@ -820,9 +820,11 @@ end
 
 -- /everlake prof page: the art of the client's first primary section (it is hidden under the list, but kept), to match
 -- its look: every texture with atlas or file, layer and size, through its child frames and status bar.
-local function DumpPage()
-    local _, _, p1 = PageParts()
-    if not p1 then print("No PrimaryProfession1 in this client.") return end
+local function DumpPage(which)
+    local _, _, first, second = PageParts()
+    local p1 = which == 2 and second or first
+    local label = which == 2 and "PrimaryProfession2" or "PrimaryProfession1"
+    if not p1 then print("No " .. label .. " in this client.") return end
     local function tex(r)
         local atlas = r.GetAtlas and r:GetAtlas()
         local w, h = r:GetSize()
@@ -846,7 +848,11 @@ local function DumpPage()
         end
         for _, c in ipairs({ frame:GetChildren() }) do walk(c, depth + 1, key(frame, c)) end
     end
-    walk(p1, 0, "PrimaryProfession1")
+    walk(p1, 0, label)
+    -- the font strings too: the empty section shows a text instead of a profession
+    for _, r in ipairs({ p1:GetRegions() }) do
+        if r:GetObjectType() == "FontString" and r:GetText() then print(" text: " .. r:GetText()) end
+    end
 end
 addon.DumpProfessionPage = DumpPage
 
