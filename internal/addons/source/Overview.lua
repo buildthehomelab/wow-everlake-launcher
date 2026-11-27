@@ -1,10 +1,10 @@
--- The Everlake Professions window: it takes the place of the client's Professions page (ProfessionsBookFrame).
+-- Every primary profession on the client's Professions page.
 --
--- The client's page has room for the primary professions in its own slots (one on Everlake, which keeps the second
--- slot free so every profession can be learned). This window, in the client's style, lists every known primary
--- profession in a scrolling list (icon, rank bar, spells, unlearn X) above the client's secondary professions.
--- Whenever the client opens its page (side tab, key binding, anything), it is closed and this window opens in its
--- place. In combat the client's page stays: secure buttons cannot be shown or hidden then.
+-- In 1.60 that page is ProfessionsFrame.BookPage: its ProfessionsContentFrame has two sections for the primary
+-- professions in the client's own slots (PrimaryProfession1/2; one used on Everlake, which keeps the second slot free
+-- so every profession can be learned) above Cooking, Fishing and First Aid. A scrolling list over the two sections
+-- shows every known primary profession instead, in sections of their size: spells, rank, rank bar, unlearn X. The
+-- secondary professions below stay the client's. In combat the page is left as the client made it.
 local _, addon = ...
 local P = addon.Professions
 if not P then return end
@@ -196,28 +196,27 @@ local function UnlearnButton(parent)
     return b
 end
 
-local window, list, content
-local sections, secondaries = {}, {}
-local SECTION_H, SECTION_GAP, BOTTOM_H, SPELL_STEP = 150, 6, 330, 46
+local list, content, page
+local sections = {}
+local SECTION_GAP, SPELL_STEP = 6, 46
+local sectionW, sectionH = 663, 142
 
-local function PrimarySection(i, width)
+local function PrimarySection(i)
     local f = sections[i]
     if not f then
         f = Panel(content)
         f.header = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        f.header:SetPoint("TOPLEFT", 16, -12)
+        f.header:SetPoint("TOPLEFT", 18, -26)
         f.spells = {}
         f.bar = Bar(f)
         f.unlearn = UnlearnButton(f)
         f.unlearn:SetPoint("LEFT", f.bar, "RIGHT", 6, 0)
         sections[i] = f
     end
-    f:SetSize(width, SECTION_H)
-    f:ClearAllPoints()
-    f:SetPoint("TOPLEFT", 0, -(i - 1) * (SECTION_H + SECTION_GAP))
+    f:SetWidth(sectionW)
     f.bar:ClearAllPoints()
-    f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.floor(width * 0.36), -48)
-    f.bar:SetPoint("RIGHT", f, "RIGHT", -46, 0)
+    f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.floor(sectionW * 0.32), -70)
+    f.bar:SetPoint("RIGHT", f, "RIGHT", -44, 0)
     return f
 end
 
@@ -228,7 +227,7 @@ local function FillPrimary(f, entry, spells)
         if spells[k] then
             if not b then
                 b = SpellButton(f)
-                b:SetPoint("TOPLEFT", 14, -36 - (k - 1) * SPELL_STEP)
+                b:SetPoint("TOPLEFT", 14, -54 - (k - 1) * SPELL_STEP)
                 f.spells[k] = b
             end
             SetSpell(b, spells[k], k == 1 and RankTitle(entry.maxRank) or nil)
@@ -236,11 +235,11 @@ local function FillPrimary(f, entry, spells)
             b:Hide()
         end
     end
-    if not spells[1] then   -- nothing to cast (Skinning): the profession's icon and name
+    if not spells[1] then   -- nothing to cast (Skinning without Tanning): the profession's icon and name
         local b = f.spells[1]
         if not b then
             b = SpellButton(f)
-            b:SetPoint("TOPLEFT", 14, -36)
+            b:SetPoint("TOPLEFT", 14, -54)
             f.spells[1] = b
         end
         b.spellId = nil
@@ -253,158 +252,94 @@ local function FillPrimary(f, entry, spells)
     SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank)
     f.unlearn.skill, f.unlearn.profession = entry.skill, entry.name
     f.unlearn:SetShown(f.bar:IsShown())
-    local height = math.max(SECTION_H, 36 + math.max(1, #spells) * SPELL_STEP + 4)
+    local height = math.max(sectionH, 54 + math.max(1, #spells) * SPELL_STEP + 4)
     f:SetHeight(height)
     f:Show()
     return height
 end
 
-local function SecondaryPanel(i)
-    local f = secondaries[i]
-    if f then return f end
-    f = Panel(window)
-    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    f.title:SetPoint("TOP", 0, -14)
-    f.bar = Bar(f)
-    f.bar:SetPoint("TOPLEFT", 14, -36)
-    f.bar:SetPoint("TOPRIGHT", -14, -36)
-    f.spells = {}
-    secondaries[i] = f
-    return f
-end
-
-local function FillSecondary(f, entry, spells)
-    f.title:SetText(entry.name)
-    SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank)
-    -- spells stacked from the bottom, as the client's page shows them
-    for k = 1, math.max(#spells, #f.spells) do
-        local b = f.spells[k]
-        if spells[k] then
-            if not b then b = SpellButton(f) f.spells[k] = b end
-            b:ClearAllPoints()
-            b:SetPoint("BOTTOMLEFT", 14, 14 + (#spells - k) * SPELL_STEP)
-            SetSpell(b, spells[k], k == 1 and RankTitle(entry.maxRank) or nil)
-        elseif b then
-            b:Hide()
-        end
-    end
-    f:Show()
+-- the client's page and its two primary sections, when this client has them
+local function PageParts()
+    local frame = _G.ProfessionsFrame
+    local book = frame and type(frame.BookPage) == "table" and frame.BookPage or nil
+    local holder = book and type(book.ProfessionsContentFrame) == "table" and book.ProfessionsContentFrame or nil
+    local p1 = (holder and type(holder.PrimaryProfession1) == "table" and holder.PrimaryProfession1) or _G.PrimaryProfession1
+    local p2 = (holder and type(holder.PrimaryProfession2) == "table" and holder.PrimaryProfession2) or _G.PrimaryProfession2
+    return book, holder, p1, p2
 end
 
 local pending
 local function Refresh()
-    if not window then return end
     if InCombatLockdown() then pending = true return end
     pending = false
-    local clientPrimary, clientSecondary = ClientProfessions()
+    local book, holder, p1, p2 = PageParts()
+    if not (book and holder and p1 and p2) or not book:IsVisible() then return end
+    if not list then
+        list = TryCreate("ScrollFrame", "EverlakeProfessionsList", holder, "UIPanelScrollFrameTemplate")
+        list:SetPoint("TOPLEFT", p1, "TOPLEFT", 0, 0)
+        list:SetPoint("BOTTOMRIGHT", p2, "BOTTOMRIGHT", -24, 0)   -- room for the scroll bar
+        list:EnableMouseWheel(true)
+        list:SetScript("OnMouseWheel", function(self, delta)
+            local range = self:GetVerticalScrollRange() or 0
+            self:SetVerticalScroll(math.max(0, math.min(range, (self:GetVerticalScroll() or 0) - delta * 60)))
+        end)
+        content = CreateFrame("Frame", nil, list)
+        list:SetScrollChild(content)
+        -- the client shows its two sections again as it refreshes the page: keep them covered
+        for _, covered in ipairs({ p1, p2 }) do
+            covered:HookScript("OnShow", function(self)
+                if list and list:IsShown() and not InCombatLockdown() then self:Hide() end
+            end)
+        end
+    end
+    local w, h = p1:GetSize()
+    if w and w > 100 then sectionW = math.floor(w - 24) end
+    if h and h > 60 then sectionH = math.floor(h) end
 
-    local width = list:GetWidth()
-    if not width or width < 100 then width = (window:GetWidth() or 700) - 60 end
+    local clientPrimary = ClientProfessions()
     local y, n = 0, 0
     for _, entry in ipairs(P.Known()) do
         n = n + 1
         local client = clientPrimary[entry.skill]
-        local spells = client and BookSpells(client.index) or StaticSpells(entry)
-        if client and #spells == 0 then spells = StaticSpells(entry) end
-        local f = PrimarySection(n, width)
+        local spells = client and BookSpells(client.index) or {}
+        if #spells == 0 then spells = StaticSpells(entry) end
+        local f = PrimarySection(n)
         f:ClearAllPoints()
         f:SetPoint("TOPLEFT", 0, -y)
         y = y + FillPrimary(f, entry, spells) + SECTION_GAP
     end
     for i = n + 1, #sections do sections[i]:Hide() end
-    content:SetSize(width, math.max(1, y))
-    window.empty:SetShown(n == 0)
-
-    local count = #clientSecondary
-    local total = (window:GetWidth() or 700) - 24
-    local w = count > 0 and math.floor((total - (count - 1) * 6) / count) or total
-    for i, entry in ipairs(clientSecondary) do
-        local f = SecondaryPanel(i)
-        f:ClearAllPoints()
-        f:SetSize(w, BOTTOM_H)
-        f:SetPoint("BOTTOMLEFT", window, "BOTTOMLEFT", 12 + (i - 1) * (w + 6), 12)
-        FillSecondary(f, entry, BookSpells(entry.index))
-    end
-    for i = count + 1, #secondaries do secondaries[i]:Hide() end
+    content:SetSize(sectionW, math.max(1, y))
+    p1:Hide()
+    p2:Hide()
+    list:Show()
 end
 
-local function CreateWindow(book)
-    window = TryCreate("Frame", "EverlakeProfessionsBook", UIParent, "PortraitFrameTemplate", "ButtonFrameTemplate", "BasicFrameTemplateWithInset")
-    window:SetAllPoints(book)   -- the client's page's place and size
-    window:SetFrameStrata(book:GetFrameStrata())
-    window:SetToplevel(true)
-    window:EnableMouse(true)
-    window:Hide()
-    -- title and the client page's portrait; guarded, as templates name these parts differently between clients
-    pcall(function()
-        local title = PROFESSIONS_BUTTON or TRADE_SKILLS or "Professions"
-        if window.SetTitle then window:SetTitle(title)
-        elseif type(window.TitleText) == "table" then window.TitleText:SetText(title)
-        elseif type(window.TitleContainer) == "table" and type(window.TitleContainer.TitleText) == "table" then
-            window.TitleContainer.TitleText:SetText(title)
-        end
-    end)
-    pcall(function()
-        local portrait = (type(book.PortraitContainer) == "table" and book.PortraitContainer.portrait)
-            or (type(book.portrait) == "table" and book.portrait) or _G.ProfessionsBookFramePortrait
-        local texture = type(portrait) == "table" and portrait.GetTexture and portrait:GetTexture()
-        if texture then
-            if window.SetPortraitToAsset then window:SetPortraitToAsset(texture)
-            elseif window.SetPortraitTextureRaw then window:SetPortraitTextureRaw(texture) end
-        end
-    end)
-    if UISpecialFrames then table.insert(UISpecialFrames, "EverlakeProfessionsBook") end   -- Escape closes it
-
-    local top = Panel(window)
-    top:SetPoint("TOPLEFT", 12, -30)
-    top:SetPoint("TOPRIGHT", -12, -30)
-    top:SetPoint("BOTTOM", window, "BOTTOM", 0, 12 + BOTTOM_H + 6)
-    list = TryCreate("ScrollFrame", "EverlakeProfessionsBookList", top, "UIPanelScrollFrameTemplate")
-    list:SetPoint("TOPLEFT", 6, -6)
-    list:SetPoint("BOTTOMRIGHT", -28, 6)
-    list:EnableMouseWheel(true)
-    list:SetScript("OnMouseWheel", function(self, delta)
-        local range = self:GetVerticalScrollRange() or 0
-        self:SetVerticalScroll(math.max(0, math.min(range, (self:GetVerticalScroll() or 0) - delta * 60)))
-    end)
-    content = CreateFrame("Frame", nil, list)
-    list:SetScrollChild(content)
-    window.empty = top:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-    window.empty:SetPoint("CENTER")
-    window.empty:SetText("No primary professions learned yet.")
-end
-
--- the client's page opens: close it, open ours in its place (or close ours when it was open: the key toggles)
-local function TakeOver(book)
-    if InCombatLockdown() then return end
-    if not window then CreateWindow(book) end
-    if window:IsShown() then
-        book:Hide()
-        window:Hide()
-        return
-    end
-    book:Hide()
-    window:Show()
-    Refresh()
-    if C_Timer and C_Timer.After then C_Timer.After(0, Refresh) end   -- once the list has its size
-end
-
-local hooked
+local hooked = {}
 local function Hook()
-    local book = _G.ProfessionsBookFrame
-    if not book or hooked then return end
-    hooked = true
-    book:HookScript("OnShow", TakeOver)
-    if book:IsShown() then TakeOver(book) end
+    local book = PageParts()
+    if book and not hooked[book] then
+        hooked[book] = true
+        book:HookScript("OnShow", function()
+            Refresh()
+            if C_Timer and C_Timer.After then C_Timer.After(0, Refresh) end   -- once the client has filled the page
+        end)
+    end
+    local frame = _G.ProfessionsFrame
+    if frame and not hooked[frame] then
+        hooked[frame] = true
+        frame:HookScript("OnShow", function()
+            if C_Timer and C_Timer.After then C_Timer.After(0, Refresh) else Refresh() end
+        end)
+    end
 end
 
 local events = CreateFrame("Frame")
-for _, e in ipairs({ "PLAYER_LOGIN", "ADDON_LOADED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED" }) do
+for _, e in ipairs({ "PLAYER_LOGIN", "ADDON_LOADED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED",
+        "TRADE_SKILL_SHOW" }) do
     pcall(events.RegisterEvent, events, e)
 end
 events:SetScript("OnEvent", function(_, event)
     Hook()
-    if window and window:IsShown() and (event ~= "PLAYER_REGEN_ENABLED" or pending) then Refresh() end
+    if event ~= "PLAYER_REGEN_ENABLED" or pending then Refresh() end
 end)
-
-addon.OverviewWindow = function() return window end
