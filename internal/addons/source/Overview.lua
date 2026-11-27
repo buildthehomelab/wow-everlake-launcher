@@ -4,7 +4,8 @@
 -- professions in the client's own slots (PrimaryProfession1/2; one used on Everlake, which keeps the second slot free
 -- so every profession can be learned) above Cooking, Fishing and First Aid. A scrolling list over the two sections
 -- shows every known primary profession instead, in sections of their size: spells, rank, rank bar, unlearn X. The
--- secondary professions below stay the client's. In combat the page is left as the client made it.
+-- secondary professions (Cooking, Fishing, First Aid) follow as sections of the same kind, so one list covers the whole
+-- page. In combat the page is left as the client made it.
 local _, addon = ...
 local P = addon.Professions
 if not P then return end
@@ -22,6 +23,7 @@ local BAR_COLORS = {
 local ATLAS_NAME = {
     [171] = "Alchemy", [164] = "Blacksmithing", [333] = "Enchanting", [202] = "Engineering", [773] = "Inscription",
     [755] = "Jewelcrafting", [165] = "Leatherworking", [197] = "Tailoring", [186] = "Mining", [182] = "Herbalism", [393] = "Skinning",
+    [185] = "Cooking", [356] = "Fishing", [129] = "FirstAid",
 }
 
 local function RankTitle(maxRank)
@@ -504,7 +506,7 @@ local function FillPrimary(f, entry, spells, p1)
         if art.crossHighlight then f.unlearn:SetHighlightAtlas(art.crossHighlight, "ADD") end
     end
     f.unlearn.skill, f.unlearn.profession = entry.skill, entry.name
-    f.unlearn:SetShown(f.bar:IsShown())
+    f.unlearn:SetShown(f.bar:IsShown() and not entry.secondary)   -- no X for Cooking, Fishing, First Aid (nor on the client's page)
     local height = math.max(sectionH, 54 + math.max(1, #spells) * SPELL_STEP + 4)
     f:SetHeight(height)
     f:Show()
@@ -518,19 +520,29 @@ local function PageParts()
     local holder = book and type(book.ProfessionsContentFrame) == "table" and book.ProfessionsContentFrame or nil
     local p1 = (holder and type(holder.PrimaryProfession1) == "table" and holder.PrimaryProfession1) or _G.PrimaryProfession1
     local p2 = (holder and type(holder.PrimaryProfession2) == "table" and holder.PrimaryProfession2) or _G.PrimaryProfession2
-    return book, holder, p1, p2
+    local secondaries = {}
+    for i = 1, 4 do
+        local f = (holder and type(holder["SecondaryProfession" .. i]) == "table" and holder["SecondaryProfession" .. i]) or _G["SecondaryProfession" .. i]
+        if type(f) == "table" and f.Hide then secondaries[#secondaries + 1] = f end
+    end
+    return book, holder, p1, p2, secondaries
 end
 
 local pending
 local function Refresh()
     if InCombatLockdown() then pending = true return end
     pending = false
-    local book, holder, p1, p2 = PageParts()
+    local book, holder, p1, p2, secondaries = PageParts()
     if not (book and holder and p1 and p2) or not book:IsVisible() then return end
+    -- the list covers the whole page: the two primary sections and the secondary row below them
+    local covered = { p1, p2 }
+    for _, f in ipairs(secondaries) do covered[#covered + 1] = f end
     if not list then
         list = TryCreate("ScrollFrame", "EverlakeProfessionsList", holder, "UIPanelScrollFrameTemplate")
+        local bottom = secondaries[1] or p2
         list:SetPoint("TOPLEFT", p1, "TOPLEFT", 0, 0)
-        list:SetPoint("BOTTOMRIGHT", p2, "BOTTOMRIGHT", -24, 0)   -- room for the scroll bar
+        list:SetPoint("TOPRIGHT", p1, "TOPRIGHT", -24, 0)   -- room for the scroll bar
+        list:SetPoint("BOTTOMLEFT", bottom, "BOTTOMLEFT", 0, 0)
         list:EnableMouseWheel(true)
         list:SetScript("OnMouseWheel", function(self, delta)
             local range = self:GetVerticalScrollRange() or 0
@@ -538,9 +550,9 @@ local function Refresh()
         end)
         content = CreateFrame("Frame", nil, list)
         list:SetScrollChild(content)
-        -- the client shows its two sections again as it refreshes the page: keep them covered
-        for _, covered in ipairs({ p1, p2 }) do
-            covered:HookScript("OnShow", function(self)
+        -- the client shows its sections again as it refreshes the page: keep them covered
+        for _, section in ipairs(covered) do
+            section:HookScript("OnShow", function(self)
                 if list and list:IsShown() and not InCombatLockdown() then self:Hide() end
             end)
         end
@@ -566,10 +578,19 @@ local function Refresh()
         f:SetPoint("TOPLEFT", 0, -y)
         y = y + FillPrimary(f, entry, spells, p1) + SECTION_GAP
     end
+    -- then Cooking, Fishing and First Aid, as the client lists them, with the spells its own page shows for them
+    local _, clientSecondary = ClientProfessions()
+    for _, entry in ipairs(clientSecondary) do
+        n = n + 1
+        entry.secondary = true
+        local f = PrimarySection(n)
+        f:ClearAllPoints()
+        f:SetPoint("TOPLEFT", 0, -y)
+        y = y + FillPrimary(f, entry, BookSpells(entry.index), p1) + SECTION_GAP
+    end
     for i = n + 1, #sections do sections[i]:Hide() end
     content:SetSize(sectionW, math.max(1, y))
-    p1:Hide()
-    p2:Hide()
+    for _, section in ipairs(covered) do section:Hide() end
     list:Show()
 end
 
