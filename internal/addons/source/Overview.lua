@@ -577,7 +577,19 @@ local function FillPrimary(f, entry, spells, p1)
     -- its border falls outside, its lower part (where the picture is) showing, its left edge faded into the panel.
     -- (Texture coordinates cannot cut an atlas here: they covered the whole sheet.)
     local secondary = not hasCard and entry.secondary and ((secondaryArt and secondaryArt[entry.name]) or (CraftArt(entry.skill) and {}))
-    if secondary then
+    -- the client's empty primary card (its free second slot) has the cards' rounded border and no profession picture:
+    -- the secondary rows' panel when it could be read
+    local emptyCard = secondary and art and art.emptyCard and TrySetAtlas(f.card, art.emptyCard)
+    if emptyCard then
+        hasCard = true
+        f.card:Show()
+        f.plain:Hide()
+        if type(f.warm) == "table" then
+            f.warm:Hide()
+            for _, line in ipairs(f.edge) do line:Hide() end
+        end
+    end
+    if secondary and not emptyCard then
         -- the primary cards' warm dark brown and thin gold edge, over the plain inset
         if type(f.warm) ~= "table" then
             f.warm = f:CreateTexture(nil, "BACKGROUND", nil, 1)
@@ -626,14 +638,17 @@ local function FillPrimary(f, entry, spells, p1)
             -- the crafting window's card (Profession-background-card-<name>, 359x484): tall, its picture in the lower
             -- part. Scaled to ~400 wide, its bottom border and right edge pushed outside the clip, the lower part
             -- showing; a wide fade on the left so its lighter background meets the panel without a seam.
-            local width = 400
-            local height = craft.h * width / craft.w
+            -- the picture takes about the lower 40% of the card (the First Aid cross at its top): the card scaled so
+            -- that band is the row's height
+            local rowH = (f:GetHeight() or sectionH) - 8
+            local height = rowH / 0.40
+            local width = craft.w * height / craft.h
             f.secArt:SetSize(width, height)
             f.secArt:ClearAllPoints()
-            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 12, -36)
+            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 8, -height * 0.035)
             f.secArt:SetAlpha(1)
-            f.artClip:SetWidth(math.min(sectionW * 0.62, width - 24))
-            f.artFade:SetWidth(120)
+            f.artClip:SetWidth(math.min(sectionW * 0.6, width - 12))
+            f.artFade:SetWidth(90)
             f.artClip:Show()
         elseif TrySetAtlas(f.secArt, secondary.atlas) then
             local scale = 1.2
@@ -649,12 +664,12 @@ local function FillPrimary(f, entry, spells, p1)
     elseif type(f.artClip) == "table" then
         f.artClip:Hide()
     end
-    if not secondary and type(f.warm) == "table" then
+    if (not secondary or emptyCard) and type(f.warm) == "table" then
         f.warm:Hide()
         for _, line in ipairs(f.edge) do line:Hide() end
     end
     f.card:SetShown(hasCard and true or false)
-    f.plain:SetShown(not hasCard)
+    f.plain:SetShown(not hasCard and not (secondary and type(f.warm) == "table" and f.warm:IsShown()))
     local model = art and p1 and BarModel(p1)
     if model and not f.profBarTried then
         f.profBarTried = true
@@ -736,6 +751,17 @@ local function Refresh()
         end
     end
     ClientArt(p1)
+    -- the empty second section's card: an overview card naming no profession
+    if art and not art.emptyCard then
+        for _, r in ipairs({ p2:GetRegions() }) do
+            local a = r.GetObjectType and r:GetObjectType() == "Texture" and r:GetAtlas()
+            if a and a:find("overview", 1, true) then
+                local named = false
+                for _, n in pairs(ATLAS_NAME) do if a:find(n, 1, true) then named = true break end end
+                if not named then art.emptyCard = a break end
+            end
+        end
+    end
     if not secondaryArt or not next(secondaryArt) then secondaryArt = ReadSecondaryArt(secondaries) end
     local w, h = p1:GetSize()
     if w and w > 100 then sectionW = math.floor(w - 24) end
