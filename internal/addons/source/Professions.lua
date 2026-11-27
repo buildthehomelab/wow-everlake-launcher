@@ -478,12 +478,29 @@ function addon.ProfessionsCommand(arg)
         print("Everlake: professions panel " .. (EverlakeDB.professionsWithSpellbook and "opens" or "no longer opens") .. " with the spellbook.")
         return
     end
+    if arg == "flip" then   -- the bar fill layouts learned (Overview.lua)
+        local known = EverlakeDB and EverlakeDB.flipbooks or {}
+        local n = 0
+        for atlas, fb in pairs(known) do
+            n = n + 1
+            print(string.format("%s: %sx%s, %s frames, %sx%s, %.2fs", atlas, tostring(fb.rows), tostring(fb.columns), tostring(fb.frames),
+                tostring(fb.width), tostring(fb.height), fb.duration or 0))
+        end
+        if n == 0 then print("no bar layouts learned yet: open a crafting window") end
+        return
+    end
+    if arg == "art" then   -- the crafting window picture learned for the Professions page (Overview.lua)
+        if addon.LearnCraftArt then pcall(addon.LearnCraftArt) end
+        local known = EverlakeDB and EverlakeDB.craftArt
+        print("crafting art: " .. (known and (tostring(known.seen) .. " -> " .. tostring(known.pattern) .. string.format(" %dx%d", known.w or 0, known.h or 0)) or "none yet: open a crafting window"))
+        return
+    end
     if arg == "bar" then   -- the bar parts of the client's Professions page section (Overview.lua)
         if addon.DumpProfessionBar then pcall(addon.DumpProfessionBar) end
         return
     end
-    if arg == "page" then   -- the art of the client's Professions page sections (Overview.lua)
-        if addon.DumpProfessionPage then pcall(addon.DumpProfessionPage) end
+    if arg == "page" or arg == "page 2" then   -- the art of the client's Professions page sections (Overview.lua)
+        if addon.DumpProfessionPage then pcall(addon.DumpProfessionPage, arg == "page 2" and 2 or 1) end
         return
     end
     if arg == "frame" then   -- which profession window this client has, for bug reports

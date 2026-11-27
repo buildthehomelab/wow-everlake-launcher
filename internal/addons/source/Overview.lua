@@ -4,7 +4,8 @@
 -- professions in the client's own slots (PrimaryProfession1/2; one used on Everlake, which keeps the second slot free
 -- so every profession can be learned) above Cooking, Fishing and First Aid. A scrolling list over the two sections
 -- shows every known primary profession instead, in sections of their size: spells, rank, rank bar, unlearn X. The
--- secondary professions below stay the client's. In combat the page is left as the client made it.
+-- secondary professions (Cooking, Fishing, First Aid) follow as sections of the same kind, so one list covers the whole
+-- page. In combat the page is left as the client made it.
 local _, addon = ...
 local P = addon.Professions
 if not P then return end
@@ -22,7 +23,25 @@ local BAR_COLORS = {
 local ATLAS_NAME = {
     [171] = "Alchemy", [164] = "Blacksmithing", [333] = "Enchanting", [202] = "Engineering", [773] = "Inscription",
     [755] = "Jewelcrafting", [165] = "Leatherworking", [197] = "Tailoring", [186] = "Mining", [182] = "Herbalism", [393] = "Skinning",
+    [185] = "Cooking", [356] = "Fishing", [129] = "FirstAid",
 }
+
+local secondaryArt   -- the client's secondary card atlases by profession name (read with the page)
+
+-- SetAtlas on 1.60 does not say when an atlas is missing (a missing card drew nothing at all): read it back instead
+local function TrySetAtlas(texture, atlas)
+    if not (texture and atlas) then return false end
+    texture:SetAtlas(atlas)
+    return texture:GetAtlas() == atlas
+end
+
+-- the rank a spell shows in the client (its subtext: Apprentice, Journeyman, ...)
+local function SpellRank(id)
+    local text
+    if C_Spell and C_Spell.GetSpellSubtext then text = C_Spell.GetSpellSubtext(id)
+    elseif GetSpellSubtext then text = GetSpellSubtext(id) end
+    if text and text ~= "" then return text end
+end
 
 local function RankTitle(maxRank)
     if not maxRank or maxRank <= 0 then return "" end
@@ -152,9 +171,9 @@ local function SpellButton(parent)
     b.slot = b:CreateTexture(nil, "OVERLAY")
     b.slot:SetSize(40, 40)
     b.slot:SetPoint("TOPLEFT")
-    if b.slot:SetAtlas("Professions-Slot-Frame") ~= false then
+    if TrySetAtlas(b.slot, "Professions-Slot-Frame") then
         b.back:Hide()
-        if b.shadow:SetAtlas("UI-HUD-ActionBar-IconFrame-FlyoutBorderShadow") == false then b.shadow:Hide() end
+        if not TrySetAtlas(b.shadow, "UI-HUD-ActionBar-IconFrame-FlyoutBorderShadow") then b.shadow:Hide() end
     else
         b.slot:Hide()
         b.shadow:Hide()
@@ -194,7 +213,7 @@ local function Bar(parent)
     bar.bg = bar:CreateTexture(nil, "BACKGROUND")
     bar.bg:SetPoint("TOPLEFT")
     bar.bg:SetSize(440, 22)
-    if bar.bg:SetAtlas("Profession-ProgressBar-BG") == false then
+    if not TrySetAtlas(bar.bg, "Profession-ProgressBar-BG") then
         bar.bg:ClearAllPoints()
         bar.bg:SetPoint("TOPLEFT", -1, 1)
         bar.bg:SetPoint("BOTTOMRIGHT", 1, -1)
@@ -208,7 +227,7 @@ end
 local function SetBar(bar, skill, name, rank, maxRank, fillAtlas)
     if rank and maxRank and maxRank > 0 then
         local fill = bar:GetStatusBarTexture()
-        if fillAtlas and fill and fill:SetAtlas(fillAtlas) ~= false then
+        if fillAtlas and fill and TrySetAtlas(fill, fillAtlas) then
             bar:SetStatusBarColor(1, 1, 1)
         else
             bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
@@ -338,6 +357,59 @@ local function ReadFlipbooks(model)
     return found
 end
 
+-- Each profession's fill sheet has its own layout (Enchanting's is not Blacksmithing's: its fill scrolled up and
+-- down). The layout of every Skillbar flipbook the client plays is learned by atlas, wherever it shows one (its own
+-- sections, the crafting window's bar), and kept in EverlakeDB.
+local function FlipbookParams(anim, group)
+    return {
+        rows = anim:GetFlipBookRows(), columns = anim:GetFlipBookColumns(), frames = anim:GetFlipBookFrames(),
+        width = anim:GetFlipBookFrameWidth(), height = anim:GetFlipBookFrameHeight(),
+        duration = anim:GetDuration(), looping = group:GetLooping(),
+    }
+end
+
+local function LearnFlipbooks(root)
+    if not (root and root.GetChildren) then return end
+    EverlakeDB = EverlakeDB or {}
+    EverlakeDB.flipbooks = EverlakeDB.flipbooks or {}
+    local known = EverlakeDB.flipbooks
+    local function walk(frame, depth)
+        if depth > 8 or frame.everlakeList == true then return end   -- never our own bars: they play our guesses
+        if frame.GetAnimationGroups then
+            for _, group in ipairs({ frame:GetAnimationGroups() }) do
+                for _, anim in ipairs({ group:GetAnimations() }) do
+                    if anim:GetObjectType() == "FlipBook" then
+                        local target = anim:GetTarget()
+                        local atlas = target and target.GetAtlas and target:GetAtlas()
+                        if atlas and atlas:find("^Skillbar_") then known[atlas] = FlipbookParams(anim, group) end
+                    end
+                end
+            end
+        end
+        for _, c in ipairs({ frame:GetChildren() }) do walk(c, depth + 1) end
+    end
+    walk(root, 0)
+end
+
+-- the layout for this atlas: learned for it, else the one read from the client's own bar
+local function FlipbookFor(atlas, default)
+    local known = EverlakeDB and EverlakeDB.flipbooks
+    return (known and atlas and known[atlas]) or default
+end
+
+local function ApplyFlipbook(anim, group, fb)
+    if not (anim and fb) then return end
+    group:Stop()
+    anim:SetFlipBookRows(fb.rows or 1)
+    anim:SetFlipBookColumns(fb.columns or 1)
+    anim:SetFlipBookFrames(fb.frames or 1)
+    anim:SetFlipBookFrameWidth(fb.width or 0)
+    anim:SetFlipBookFrameHeight(fb.height or 0)
+    anim:SetDuration(fb.duration or 1)
+    group:SetLooping((fb.looping and fb.looping ~= "NONE") and fb.looping or "REPEAT")
+    group:Play()
+end
+
 local function PlayFlipbook(owner, texture, fb)
     local group = owner:CreateAnimationGroup()
     local anim = group:CreateAnimation("FlipBook")
@@ -350,7 +422,7 @@ local function PlayFlipbook(owner, texture, fb)
     anim:SetDuration(fb.duration or 1)
     group:SetLooping((fb.looping and fb.looping ~= "NONE") and fb.looping or "REPEAT")
     group:Play()
-    return group
+    return group, anim
 end
 
 local function ProfessionBar(parent, model)
@@ -359,7 +431,7 @@ local function ProfessionBar(parent, model)
     bar.bg = bar:CreateTexture(nil, "ARTWORK", nil, 0)
     bar.bg:SetSize(BAR_W, BAR_FRAME_H)
     bar.bg:SetPoint("TOPLEFT")
-    if bar.bg:SetAtlas("Profession-ProgressBar-BG") == false then bar:Hide() return nil end
+    if not TrySetAtlas(bar.bg, "Profession-ProgressBar-BG") then bar:Hide() return nil end
     bar.fill = bar:CreateTexture(nil, "ARTWORK", nil, 1)
     bar.fill:SetSize(FILL_W, BAR_H)
     bar.fill:SetPoint("TOPLEFT", 2, -3)
@@ -376,9 +448,9 @@ local function ProfessionBar(parent, model)
     bar.text = textHolder:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     bar.text:SetPoint("CENTER", 0, -2)
     local fb = ReadFlipbooks(model)
-    bar.flipFill = fb.fill
-    if fb.fill then PlayFlipbook(bar, bar.fill, fb.fill) end
-    if fb.flare then PlayFlipbook(bar, bar.flare, fb.flare) end
+    bar.flipFill, bar.flipFlare = fb.fill, fb.flare
+    if fb.fill then bar.fillGroup, bar.fillAnim = PlayFlipbook(bar, bar.fill, fb.fill) end
+    if fb.flare then bar.flareGroup, bar.flareAnim = PlayFlipbook(bar, bar.flare, fb.flare) end
     bar.isProfessionBar = true
     return bar
 end
@@ -395,7 +467,14 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
     local flareAtlas = fillAtlas and fillAtlas:gsub("Fill_Flipbook", "Flare") or nil
     if not (rank and maxRank and maxRank > 0) then bar:Hide() return end
     -- a flipbook fill without its animation would show the whole sheet: then a plain coloured fill
-    local animated = bar.flipFill and fillAtlas and bar.fill:SetAtlas(fillAtlas) ~= false
+    local animated = bar.flipFill and fillAtlas and TrySetAtlas(bar.fill, fillAtlas)
+    -- this profession's own sheet layout; again whenever a layout for it has been learned since (Enchanting's 37x2
+    -- arrived only once its crafting window was opened, and the bar kept playing the 30x2 default)
+    local fillLayout = animated and FlipbookFor(fillAtlas, bar.flipFill)
+    if fillLayout and (bar.fillAtlasPlayed ~= fillAtlas or bar.fillLayoutPlayed ~= fillLayout) then
+        bar.fillAtlasPlayed, bar.fillLayoutPlayed = fillAtlas, fillLayout
+        ApplyFlipbook(bar.fillAnim, bar.fillGroup, fillLayout)
+    end
     if not animated then
         bar.fill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
         local c = BAR_COLORS[skill] or { 0.9, 0.6, 0.1 }
@@ -403,13 +482,91 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
     else
         bar.fill:SetVertexColor(1, 1, 1)
     end
-    local hasFlare = flareAtlas and bar.flare:SetAtlas(flareAtlas) ~= false
+    local hasFlare = flareAtlas and TrySetAtlas(bar.flare, flareAtlas)
+    local flareLayout = hasFlare and FlipbookFor(flareAtlas, bar.flipFlare)
+    if flareLayout and (bar.flareAtlasPlayed ~= flareAtlas or bar.flareLayoutPlayed ~= flareLayout) then
+        bar.flareAtlasPlayed, bar.flareLayoutPlayed = flareAtlas, flareLayout
+        ApplyFlipbook(bar.flareAnim, bar.flareGroup, flareLayout)
+    end
     local fraction = math.max(0, math.min(1, rank / maxRank))
-    bar.fill:SetWidth(math.max(1, FILL_W * fraction))
+    local width = math.max(1, FILL_W * fraction)
+    bar.fill:SetWidth(width)
     bar.fill:SetShown(fraction > 0)
-    bar.flare:SetShown(hasFlare and fraction > 0 and fraction < 1 and true or false)
+    -- the flare sits on the fill's right end; on a fill narrower than itself it would stick out left of the bar
+    bar.flare:SetShown(hasFlare and width >= 53 and fraction < 1 and true or false)
     bar.text:SetText(string.format("%s %d/%d", name or "", rank, maxRank))
     bar:Show()
+end
+
+-- The crafting window's picture for each profession (the pot for Cooking, the kit for First Aid): learned when a
+-- crafting window is open, from the large texture whose atlas carries that profession's name, kept as a pattern
+-- ("...%s...") in EverlakeDB so the Professions page has it in later sessions too.
+local function OpenProfessionSkill()
+    if C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo then
+        local ok, info = pcall(C_TradeSkillUI.GetBaseProfessionInfo)
+        if ok and info then return info.professionID or info.skillLineID end
+    end
+end
+
+local function LearnCraftArt()
+    local frame = _G.ProfessionsFrame
+    if not (frame and frame:IsShown()) then return end
+    local book = type(frame.BookPage) == "table" and frame.BookPage or nil
+    if book and book:IsShown() then return end   -- the overview page, not a crafting page
+    local name = ATLAS_NAME[OpenProfessionSkill() or 0]
+    if not name then return end
+    local best
+    local function walk(f, depth)
+        if depth > 6 or f == book then return end
+        for _, r in ipairs({ f:GetRegions() }) do
+            if r.GetObjectType and r:GetObjectType() == "Texture" and r:IsVisible() then
+                local atlas = r:GetAtlas()
+                local w, h = r:GetSize()
+                if atlas and w and w >= 150 and atlas:find(name, 1, true) and not atlas:find("Skillbar") and (not best or w * h > best.w * best.h) then
+                    best = { atlas = atlas, w = w, h = h }
+                end
+            end
+        end
+        for _, c in ipairs({ f:GetChildren() }) do walk(c, depth + 1) end
+    end
+    walk(frame, 0)
+    pcall(LearnFlipbooks, frame)   -- the crafting window's own bar: this profession's fill layout
+    if best then
+        EverlakeDB = EverlakeDB or {}
+        EverlakeDB.craftArt = { pattern = (best.atlas:gsub(name, "%%s")), w = best.w, h = best.h, seen = best.atlas }
+    end
+end
+
+local function CraftArt(skill)
+    local known = EverlakeDB and EverlakeDB.craftArt
+    local name = ATLAS_NAME[skill]
+    if not (known and known.pattern and name) then return nil end
+    return { atlas = known.pattern:format(name), w = known.w, h = known.h }
+end
+addon.LearnCraftArt = LearnCraftArt
+
+-- the card atlases of the client's secondary sections, by the profession name each one shows
+local function ReadSecondaryArt(frames)
+    local found = {}
+    for _, frame in ipairs(frames) do
+        local name, atlas, w, h
+        local function walk(f2, depth)
+            if depth > 3 then return end
+            for _, r in ipairs({ f2:GetRegions() }) do
+                local kind = r.GetObjectType and r:GetObjectType()
+                if kind == "Texture" and not atlas and r:GetDrawLayer() == "BACKGROUND" and r:GetAtlas() then
+                    atlas = r:GetAtlas()
+                    w, h = r:GetSize()
+                elseif kind == "FontString" and not name and r:GetText() and r:GetText() ~= "" then
+                    name = r:GetText()
+                end
+            end
+            for _, c in ipairs({ f2:GetChildren() }) do walk(c, depth + 1) end
+        end
+        walk(frame, 0)
+        if name and atlas and w and h and w > 0 and h > 0 then found[name] = { atlas = atlas, w = w, h = h } end
+    end
+    return found
 end
 
 local list, content, page
@@ -444,6 +601,13 @@ end
 
 local function FillPrimary(f, entry, spells, p1)
     f.header:SetText(entry.name)
+    -- the profession's own spell first (the spellbook lists Bait and Tackle before Fishing)
+    table.sort(spells, function(a, b)
+        local an, bn = P.SpellNameIcon(a), P.SpellNameIcon(b)
+        local am, bm = an == entry.name, bn == entry.name
+        if am ~= bm then return am end
+        return false
+    end)
     for k = 1, math.max(#spells, #f.spells) do
         local b = f.spells[k]
         if spells[k] then
@@ -452,7 +616,7 @@ local function FillPrimary(f, entry, spells, p1)
                 b:SetPoint("TOPLEFT", 14, -54 - (k - 1) * SPELL_STEP)
                 f.spells[k] = b
             end
-            SetSpell(b, spells[k], k == 1 and RankTitle(entry.maxRank) or nil)
+            SetSpell(b, spells[k], SpellRank(spells[k]) or (k == 1 and RankTitle(entry.maxRank) or nil))
         elseif b then
             b:Hide()
         end
@@ -472,9 +636,136 @@ local function FillPrimary(f, entry, spells, p1)
         b:Show()
     end
     local card = ATLAS_NAME[entry.skill] and ("Profession-overview-Card-" .. ATLAS_NAME[entry.skill])
-    local hasCard = card and f.card:SetAtlas(card) ~= false
+    f.card:SetTexCoord(0, 1, 0, 1)
+    local hasCard = card and TrySetAtlas(f.card, card)
+    -- Cooking, Fishing, First Aid: the client has only tall cards for them (224x275, with their own border). A plain
+    -- panel, and on its right the card's picture through a clipping frame: the card a little larger than the clip so
+    -- its border falls outside, its lower part (where the picture is) showing, its left edge faded into the panel.
+    -- (Texture coordinates cannot cut an atlas here: they covered the whole sheet.)
+    local secondary = not hasCard and entry.secondary and ((secondaryArt and secondaryArt[entry.name]) or (CraftArt(entry.skill) and {}))
+    -- the client's empty primary card (its free second slot) has the cards' rounded border and no profession picture:
+    -- the secondary rows' panel when it could be read
+    local emptyCard = secondary and art and art.emptyCard and TrySetAtlas(f.card, art.emptyCard)
+    -- with no empty card to read (both slots used), a primary card for its rounded border, its own picture hidden
+    -- under an opaque panel in the cards' brown just inside the border
+    local borrowed = false
+    if secondary and not emptyCard and art and art.cardName then
+        borrowed = TrySetAtlas(f.card, "Profession-overview-Card-" .. art.cardName)
+        if borrowed then
+            -- only the card's picture area (its right part) is covered; its border and inner shading stay its own
+            if type(f.cover) ~= "table" then
+                f.cover = f:CreateTexture(nil, "BACKGROUND", nil, 2)
+                f.cover:SetPoint("TOPRIGHT", -8, -8)
+                f.cover:SetPoint("BOTTOMRIGHT", -8, 8)
+                f.cover:SetColorTexture(0.11, 0.08, 0.05, 1)
+                f.coverFade = f:CreateTexture(nil, "BACKGROUND", nil, 3)
+                f.coverFade:SetPoint("TOPRIGHT", f.cover, "TOPLEFT", 0, 0)
+                f.coverFade:SetPoint("BOTTOMRIGHT", f.cover, "BOTTOMLEFT", 0, 0)
+                f.coverFade:SetWidth(80)
+                f.coverFade:SetColorTexture(1, 1, 1, 1)
+                pcall(function()
+                    f.coverFade:SetGradient("HORIZONTAL", CreateColor(0.11, 0.08, 0.05, 0), CreateColor(0.11, 0.08, 0.05, 1))
+                end)
+            end
+            f.cover:SetWidth(math.floor(sectionW * 0.55))
+            f.cover:Show()
+            f.coverFade:Show()
+            emptyCard = true   -- from here on the same as the empty card
+        end
+    end
+    if not borrowed and type(f.cover) == "table" then f.cover:Hide() f.coverFade:Hide() end
+    if emptyCard then
+        hasCard = true
+        f.card:Show()
+        f.plain:Hide()
+        if type(f.warm) == "table" then
+            f.warm:Hide()
+            for _, line in ipairs(f.edge) do line:Hide() end
+        end
+    end
+    if secondary and not emptyCard then   -- the square panel only without a card
+        -- the primary cards' warm dark brown and thin gold edge, over the plain inset
+        if type(f.warm) ~= "table" then
+            f.warm = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+            f.warm:SetPoint("TOPLEFT", 3, -3)
+            f.warm:SetPoint("BOTTOMRIGHT", -3, 3)
+            f.warm:SetColorTexture(0.11, 0.08, 0.05, 1)
+            f.edge = {}
+            for i, side in ipairs({ { "TOPLEFT", "TOPRIGHT" }, { "BOTTOMLEFT", "BOTTOMRIGHT" } }) do
+                local line = f:CreateTexture(nil, "BORDER")
+                line:SetPoint(side[1], i == 1 and 3 or 3, i == 1 and -3 or 3)
+                line:SetPoint(side[2], -3, i == 1 and -3 or 3)
+                line:SetHeight(1)
+                line:SetColorTexture(0.55, 0.42, 0.2, 0.8)
+                f.edge[#f.edge + 1] = line
+            end
+            for i, side in ipairs({ { "TOPLEFT", "BOTTOMLEFT" }, { "TOPRIGHT", "BOTTOMRIGHT" } }) do
+                local line = f:CreateTexture(nil, "BORDER")
+                line:SetPoint(side[1], i == 1 and 3 or -3, -3)
+                line:SetPoint(side[2], i == 1 and 3 or -3, 3)
+                line:SetWidth(1)
+                line:SetColorTexture(0.55, 0.42, 0.2, 0.8)
+                f.edge[#f.edge + 1] = line
+            end
+        end
+        f.warm:Show()
+        for _, line in ipairs(f.edge) do line:Show() end
+    end
+    if secondary then
+        if type(f.artClip) ~= "table" then
+            f.artClip = CreateFrame("Frame", nil, f)
+            f.artClip:SetPoint("TOPRIGHT", -8, -8)   -- inside the card's rounded border, over the cover
+            f.artClip:SetPoint("BOTTOMRIGHT", -8, 8)
+            f.artClip:SetWidth(250)
+            if f.artClip.SetClipsChildren then f.artClip:SetClipsChildren(true) end
+            f.artClip:SetFrameLevel(f:GetFrameLevel() + 1)
+            f.secArt = f.artClip:CreateTexture(nil, "BACKGROUND")
+            f.artFade = f.artClip:CreateTexture(nil, "ARTWORK")
+            f.artFade:SetPoint("TOPLEFT")
+            f.artFade:SetPoint("BOTTOMLEFT")
+            f.artFade:SetWidth(60)
+            f.artFade:SetColorTexture(1, 1, 1, 1)
+            pcall(function()
+                f.artFade:SetGradient("HORIZONTAL", CreateColor(0.11, 0.08, 0.05, 1), CreateColor(0.11, 0.08, 0.05, 0))
+            end)
+        end
+        local craft = CraftArt(entry.skill)
+        if craft and TrySetAtlas(f.secArt, craft.atlas) then
+            -- the crafting window's card (Profession-background-card-<name>, 359x484): tall, its picture in the lower
+            -- part. Scaled to ~400 wide, its bottom border and right edge pushed outside the clip, the lower part
+            -- showing; a wide fade on the left so its lighter background meets the panel without a seam.
+            -- the picture takes about the lower 40% of the card (the First Aid cross at its top): the card scaled so
+            -- that band is the row's height
+            local rowH = (f:GetHeight() or sectionH) - 8
+            local height = rowH / 0.40
+            local width = craft.w * height / craft.h
+            f.secArt:SetSize(width, height)
+            f.secArt:ClearAllPoints()
+            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 8, -height * 0.035)
+            f.secArt:SetAlpha(1)
+            f.artClip:SetWidth(math.min(sectionW * 0.6, width - 12))
+            f.artFade:SetWidth(90)
+            f.artClip:Show()
+        elseif TrySetAtlas(f.secArt, secondary.atlas) then
+            local scale = 1.2
+            f.secArt:SetSize(secondary.w * scale, secondary.h * scale)
+            f.secArt:ClearAllPoints()
+            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 12, -14)
+            f.secArt:SetAlpha(0.85)
+            f.artClip:SetWidth(250)
+            f.artClip:Show()
+        else
+            f.artClip:Hide()
+        end
+    elseif type(f.artClip) == "table" then
+        f.artClip:Hide()
+    end
+    if (not secondary or emptyCard) and type(f.warm) == "table" then
+        f.warm:Hide()
+        for _, line in ipairs(f.edge) do line:Hide() end
+    end
     f.card:SetShown(hasCard and true or false)
-    f.plain:SetShown(not hasCard)
+    f.plain:SetShown(not hasCard and not (secondary and type(f.warm) == "table" and f.warm:IsShown()))
     local model = art and p1 and BarModel(p1)
     if model and not f.profBarTried then
         f.profBarTried = true
@@ -504,7 +795,9 @@ local function FillPrimary(f, entry, spells, p1)
         if art.crossHighlight then f.unlearn:SetHighlightAtlas(art.crossHighlight, "ADD") end
     end
     f.unlearn.skill, f.unlearn.profession = entry.skill, entry.name
-    f.unlearn:SetShown(f.bar:IsShown())
+    -- no unlearn X: every profession can be learned on Everlake, so it only risked losing skill by a stray click
+    -- (a trainer still unlearns)
+    f.unlearn:Hide()
     local height = math.max(sectionH, 54 + math.max(1, #spells) * SPELL_STEP + 4)
     f:SetHeight(height)
     f:Show()
@@ -518,19 +811,30 @@ local function PageParts()
     local holder = book and type(book.ProfessionsContentFrame) == "table" and book.ProfessionsContentFrame or nil
     local p1 = (holder and type(holder.PrimaryProfession1) == "table" and holder.PrimaryProfession1) or _G.PrimaryProfession1
     local p2 = (holder and type(holder.PrimaryProfession2) == "table" and holder.PrimaryProfession2) or _G.PrimaryProfession2
-    return book, holder, p1, p2
+    local secondaries = {}
+    for i = 1, 4 do
+        local f = (holder and type(holder["SecondaryProfession" .. i]) == "table" and holder["SecondaryProfession" .. i]) or _G["SecondaryProfession" .. i]
+        if type(f) == "table" and f.Hide then secondaries[#secondaries + 1] = f end
+    end
+    return book, holder, p1, p2, secondaries
 end
 
 local pending
 local function Refresh()
     if InCombatLockdown() then pending = true return end
     pending = false
-    local book, holder, p1, p2 = PageParts()
+    local book, holder, p1, p2, secondaries = PageParts()
     if not (book and holder and p1 and p2) or not book:IsVisible() then return end
+    -- the list covers the whole page: the two primary sections and the secondary row below them
+    local covered = { p1, p2 }
+    for _, f in ipairs(secondaries) do covered[#covered + 1] = f end
     if not list then
         list = TryCreate("ScrollFrame", "EverlakeProfessionsList", holder, "UIPanelScrollFrameTemplate")
+        list.everlakeList = true
+        local bottom = secondaries[1] or p2
         list:SetPoint("TOPLEFT", p1, "TOPLEFT", 0, 0)
-        list:SetPoint("BOTTOMRIGHT", p2, "BOTTOMRIGHT", -24, 0)   -- room for the scroll bar
+        list:SetPoint("TOPRIGHT", p1, "TOPRIGHT", -24, 0)   -- room for the scroll bar
+        list:SetPoint("BOTTOMLEFT", bottom, "BOTTOMLEFT", 0, 0)
         list:EnableMouseWheel(true)
         list:SetScript("OnMouseWheel", function(self, delta)
             local range = self:GetVerticalScrollRange() or 0
@@ -538,14 +842,27 @@ local function Refresh()
         end)
         content = CreateFrame("Frame", nil, list)
         list:SetScrollChild(content)
-        -- the client shows its two sections again as it refreshes the page: keep them covered
-        for _, covered in ipairs({ p1, p2 }) do
-            covered:HookScript("OnShow", function(self)
+        -- the client shows its sections again as it refreshes the page: keep them covered
+        for _, section in ipairs(covered) do
+            section:HookScript("OnShow", function(self)
                 if list and list:IsShown() and not InCombatLockdown() then self:Hide() end
             end)
         end
     end
     ClientArt(p1)
+    pcall(LearnFlipbooks, holder)   -- the client's own sections: the fill layouts of its slotted professions
+    -- the empty second section's card: an overview card naming no profession
+    if art and not art.emptyCard then
+        for _, r in ipairs({ p2:GetRegions() }) do
+            local a = r.GetObjectType and r:GetObjectType() == "Texture" and r:GetAtlas()
+            if a and a:find("overview", 1, true) then
+                local named = false
+                for _, n in pairs(ATLAS_NAME) do if a:find(n, 1, true) then named = true break end end
+                if not named then art.emptyCard = a break end
+            end
+        end
+    end
+    if not secondaryArt or not next(secondaryArt) then secondaryArt = ReadSecondaryArt(secondaries) end
     local w, h = p1:GetSize()
     if w and w > 100 then sectionW = math.floor(w - 24) end
     if h and h > 60 then sectionH = math.floor(h) end
@@ -566,10 +883,19 @@ local function Refresh()
         f:SetPoint("TOPLEFT", 0, -y)
         y = y + FillPrimary(f, entry, spells, p1) + SECTION_GAP
     end
+    -- then Cooking, Fishing and First Aid, as the client lists them, with the spells its own page shows for them
+    local _, clientSecondary = ClientProfessions()
+    for _, entry in ipairs(clientSecondary) do
+        n = n + 1
+        entry.secondary = true
+        local f = PrimarySection(n)
+        f:ClearAllPoints()
+        f:SetPoint("TOPLEFT", 0, -y)
+        y = y + FillPrimary(f, entry, BookSpells(entry.index), p1) + SECTION_GAP
+    end
     for i = n + 1, #sections do sections[i]:Hide() end
     content:SetSize(sectionW, math.max(1, y))
-    p1:Hide()
-    p2:Hide()
+    for _, section in ipairs(covered) do section:Hide() end
     list:Show()
 end
 
@@ -594,9 +920,11 @@ end
 
 -- /everlake prof page: the art of the client's first primary section (it is hidden under the list, but kept), to match
 -- its look: every texture with atlas or file, layer and size, through its child frames and status bar.
-local function DumpPage()
-    local _, _, p1 = PageParts()
-    if not p1 then print("No PrimaryProfession1 in this client.") return end
+local function DumpPage(which)
+    local _, _, first, second = PageParts()
+    local p1 = which == 2 and second or first
+    local label = which == 2 and "PrimaryProfession2" or "PrimaryProfession1"
+    if not p1 then print("No " .. label .. " in this client.") return end
     local function tex(r)
         local atlas = r.GetAtlas and r:GetAtlas()
         local w, h = r:GetSize()
@@ -620,7 +948,11 @@ local function DumpPage()
         end
         for _, c in ipairs({ frame:GetChildren() }) do walk(c, depth + 1, key(frame, c)) end
     end
-    walk(p1, 0, "PrimaryProfession1")
+    walk(p1, 0, label)
+    -- the font strings too: the empty section shows a text instead of a profession
+    for _, r in ipairs({ p1:GetRegions() }) do
+        if r:GetObjectType() == "FontString" and r:GetText() then print(" text: " .. r:GetText()) end
+    end
 end
 addon.DumpProfessionPage = DumpPage
 
@@ -662,10 +994,14 @@ addon.DumpProfessionBar = DumpBar
 
 local events = CreateFrame("Frame")
 for _, e in ipairs({ "PLAYER_LOGIN", "ADDON_LOADED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED",
-        "TRADE_SKILL_SHOW" }) do
+        "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE" }) do
     pcall(events.RegisterEvent, events, e)
 end
 events:SetScript("OnEvent", function(_, event)
     Hook()
+    if event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_LIST_UPDATE" then
+        pcall(LearnCraftArt)
+        if C_Timer and C_Timer.After then C_Timer.After(0.2, function() pcall(LearnCraftArt) end) end
+    end
     if event ~= "PLAYER_REGEN_ENABLED" or pending then Refresh() end
 end)
