@@ -433,6 +433,52 @@ local function SetProfessionBar(bar, skill, name, rank, maxRank)
     bar:Show()
 end
 
+-- The crafting window's picture for each profession (the pot for Cooking, the kit for First Aid): learned when a
+-- crafting window is open, from the large texture whose atlas carries that profession's name, kept as a pattern
+-- ("...%s...") in EverlakeDB so the Professions page has it in later sessions too.
+local function OpenProfessionSkill()
+    if C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo then
+        local ok, info = pcall(C_TradeSkillUI.GetBaseProfessionInfo)
+        if ok and info then return info.professionID or info.skillLineID end
+    end
+end
+
+local function LearnCraftArt()
+    local frame = _G.ProfessionsFrame
+    if not (frame and frame:IsShown()) then return end
+    local book = type(frame.BookPage) == "table" and frame.BookPage or nil
+    if book and book:IsShown() then return end   -- the overview page, not a crafting page
+    local name = ATLAS_NAME[OpenProfessionSkill() or 0]
+    if not name then return end
+    local best
+    local function walk(f, depth)
+        if depth > 6 or f == book then return end
+        for _, r in ipairs({ f:GetRegions() }) do
+            if r.GetObjectType and r:GetObjectType() == "Texture" and r:IsVisible() then
+                local atlas = r:GetAtlas()
+                local w, h = r:GetSize()
+                if atlas and w and w >= 150 and atlas:find(name, 1, true) and not atlas:find("Skillbar") and (not best or w * h > best.w * best.h) then
+                    best = { atlas = atlas, w = w, h = h }
+                end
+            end
+        end
+        for _, c in ipairs({ f:GetChildren() }) do walk(c, depth + 1) end
+    end
+    walk(frame, 0)
+    if best then
+        EverlakeDB = EverlakeDB or {}
+        EverlakeDB.craftArt = { pattern = (best.atlas:gsub(name, "%%s")), w = best.w, h = best.h, seen = best.atlas }
+    end
+end
+
+local function CraftArt(skill)
+    local known = EverlakeDB and EverlakeDB.craftArt
+    local name = ATLAS_NAME[skill]
+    if not (known and known.pattern and name) then return nil end
+    return { atlas = known.pattern:format(name), w = known.w, h = known.h }
+end
+addon.LearnCraftArt = LearnCraftArt
+
 -- the card atlases of the client's secondary sections, by the profession name each one shows
 local function ReadSecondaryArt(frames)
     local found = {}
@@ -530,7 +576,7 @@ local function FillPrimary(f, entry, spells, p1)
     -- panel, and on its right the card's picture through a clipping frame: the card a little larger than the clip so
     -- its border falls outside, its lower part (where the picture is) showing, its left edge faded into the panel.
     -- (Texture coordinates cannot cut an atlas here: they covered the whole sheet.)
-    local secondary = not hasCard and entry.secondary and secondaryArt and secondaryArt[entry.name]
+    local secondary = not hasCard and entry.secondary and ((secondaryArt and secondaryArt[entry.name]) or (CraftArt(entry.skill) and {}))
     if secondary then
         -- the primary cards' warm dark brown and thin gold edge, over the plain inset
         if type(f.warm) ~= "table" then
@@ -575,12 +621,23 @@ local function FillPrimary(f, entry, spells, p1)
                 f.artFade:SetGradient("HORIZONTAL", CreateColor(0.11, 0.08, 0.05, 1), CreateColor(0.11, 0.08, 0.05, 0))
             end)
         end
-        if TrySetAtlas(f.secArt, secondary.atlas) then
+        local craft = CraftArt(entry.skill)
+        if craft and TrySetAtlas(f.secArt, craft.atlas) then
+            -- the crafting window's picture has no frame: as tall as the section and a bit more, from the bottom
+            local height = (f:GetHeight() or sectionH) * 1.25
+            f.secArt:SetSize(craft.w * height / craft.h, height)
+            f.secArt:ClearAllPoints()
+            f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 0, -8)
+            f.secArt:SetAlpha(0.9)
+            f.artClip:SetWidth(math.min(sectionW * 0.6, craft.w * height / craft.h))
+            f.artClip:Show()
+        elseif TrySetAtlas(f.secArt, secondary.atlas) then
             local scale = 1.2
             f.secArt:SetSize(secondary.w * scale, secondary.h * scale)
             f.secArt:ClearAllPoints()
             f.secArt:SetPoint("BOTTOMRIGHT", f.artClip, "BOTTOMRIGHT", 12, -14)
             f.secArt:SetAlpha(0.85)
+            f.artClip:SetWidth(250)
             f.artClip:Show()
         else
             f.artClip:Hide()
@@ -801,10 +858,14 @@ addon.DumpProfessionBar = DumpBar
 
 local events = CreateFrame("Frame")
 for _, e in ipairs({ "PLAYER_LOGIN", "ADDON_LOADED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB", "PLAYER_REGEN_ENABLED",
-        "TRADE_SKILL_SHOW" }) do
+        "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE" }) do
     pcall(events.RegisterEvent, events, e)
 end
 events:SetScript("OnEvent", function(_, event)
     Hook()
+    if event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_LIST_UPDATE" then
+        pcall(LearnCraftArt)
+        if C_Timer and C_Timer.After then C_Timer.After(0.2, function() pcall(LearnCraftArt) end) end
+    end
     if event ~= "PLAYER_REGEN_ENABLED" or pending then Refresh() end
 end)

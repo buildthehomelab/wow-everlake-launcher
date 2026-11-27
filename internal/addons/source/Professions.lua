@@ -478,6 +478,12 @@ function addon.ProfessionsCommand(arg)
         print("Everlake: professions panel " .. (EverlakeDB.professionsWithSpellbook and "opens" or "no longer opens") .. " with the spellbook.")
         return
     end
+    if arg == "art" then   -- the crafting window picture learned for the Professions page (Overview.lua)
+        if addon.LearnCraftArt then pcall(addon.LearnCraftArt) end
+        local known = EverlakeDB and EverlakeDB.craftArt
+        print("crafting art: " .. (known and (tostring(known.seen) .. " -> " .. tostring(known.pattern) .. string.format(" %dx%d", known.w or 0, known.h or 0)) or "none yet: open a crafting window"))
+        return
+    end
     if arg == "bar" then   -- the bar parts of the client's Professions page section (Overview.lua)
         if addon.DumpProfessionBar then pcall(addon.DumpProfessionBar) end
         return
