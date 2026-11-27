@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildthehomelab/wow-everlake-launcher/internal/addons"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/gamepatch"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/install"
 	"github.com/buildthehomelab/wow-everlake-launcher/internal/realm"
@@ -159,6 +160,7 @@ func joinRealm(ctx context.Context, dir string, s realm.Settings, password strin
 	}
 	log(fmt.Sprintf("signed in, game account %s", login.GameAccount))
 	clearCache(gameDir, log)
+	refreshAddon(dir, st.Pin, log)
 
 	args := append(st.Pin.StartArgs(), "-launcherlogin", "-config", realm.WTFName)
 	game, err := gamepatch.Launch(gamepatch.Options{
@@ -226,6 +228,16 @@ func earlyExit(code int, ran time.Duration) string {
 
 // clearCache empties the game's Cache/WDB folder before it joins a realm, so it doesn't show creature, quest or item
 // data from an earlier state of the realm; the hotfixes in Cache/ADB stay (install.ClearGameCache). clear_cache false in launcher.json turns it off. It never stops a launch.
+// refreshAddon brings the Everlake addon up to this launcher's copy before the game starts. Install wrote it only on
+// Install, so a launcher update left the game on the previous addon until the next Install. Install keeps an
+// unchanged package as it is and backs up the one it replaces. A failure (an unmanaged Everlake folder, a client build
+// without a package) is logged, never stops the game.
+func refreshAddon(dir string, p pin.Pin, log func(string)) {
+	if err := addons.Install(dir, p); err != nil {
+		log("note: the Everlake addon was not updated: " + err.Error())
+	}
+}
+
 func clearCache(gameDir string, log func(string)) {
 	if s, _ := settings.Load(); !s.ClearsCache() {
 		return
