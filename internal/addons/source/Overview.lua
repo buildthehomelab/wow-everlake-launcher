@@ -297,6 +297,113 @@ local function FillAtlas(skill)
     return n > 0 and swapped or nil
 end
 
+-- An exact copy of the client's profession bar (the StatusBar frame of its hidden first section): every texture and
+-- child frame with its layer, size and anchors, the inner status bar as a real status bar, the profession's name
+-- swapped in the atlases that carry it. A status bar lists its own fill among its regions; that one is not copied
+-- (it would be a second, full width fill). Font strings are not copied: the copy has its own rank text.
+local function BarModel(p1)
+    if type(p1.StatusBar) == "table" and p1.StatusBar.GetRegions then return p1.StatusBar end
+    for _, c in ipairs({ p1:GetChildren() }) do
+        if c.IsObjectType and c:IsObjectType("StatusBar") then return c end
+    end
+end
+
+local function CloneBar(model, parent, p1)
+    local map, pairsList, bars, swaps = { [p1] = parent }, {}, {}, {}
+    local isBar = function(frame) return frame.IsObjectType and frame:IsObjectType("StatusBar") end
+    local root = CreateFrame(isBar(model) and "StatusBar" or "Frame", nil, parent)
+    map[model] = root
+    local function build(from, to, depth)
+        pairsList[#pairsList + 1] = { from, to }
+        local fill = isBar(from) and from:GetStatusBarTexture() or nil
+        if fill then
+            local atlas = fill:GetAtlas()
+            to:SetStatusBarTexture(atlas and "Interface\\Buttons\\WHITE8x8" or (fill:GetTexture() or "Interface\\TargetingFrame\\UI-StatusBar"))
+            if atlas then to:GetStatusBarTexture():SetAtlas(atlas) end
+            to:SetStatusBarColor(fill:GetVertexColor())
+            bars[#bars + 1] = { bar = to, atlas = atlas }
+        end
+        for _, r in ipairs({ from:GetRegions() }) do
+            if r ~= fill and r:GetObjectType() == "Texture" then
+                local c = to:CreateTexture(nil, r:GetDrawLayer())
+                map[r] = c
+                pairsList[#pairsList + 1] = { r, c }
+            end
+        end
+        if depth < 3 then
+            for _, child in ipairs({ from:GetChildren() }) do
+                local c = CreateFrame(isBar(child) and "StatusBar" or "Frame", nil, to)
+                c:SetFrameLevel(to:GetFrameLevel() + math.max(0, child:GetFrameLevel() - from:GetFrameLevel()))
+                map[child] = c
+                build(child, c, depth + 1)
+            end
+        end
+    end
+    build(model, root, 0)
+    for _, pair in ipairs(pairsList) do
+        local from, to = pair[1], pair[2]
+        local w, h = from:GetSize()
+        if w and w > 0 then to:SetSize(w, h) end
+        if from:GetNumPoints() > 0 then
+            to:ClearAllPoints()
+            for i = 1, from:GetNumPoints() do
+                local point, relative, relativePoint, x, y = from:GetPoint(i)
+                to:SetPoint(point, map[relative] or to:GetParent(), relativePoint, x, y)
+            end
+        elseif to ~= root then
+            to:SetAllPoints()
+        end
+        if from:GetObjectType() == "Texture" then
+            local atlas = from:GetAtlas()
+            if atlas then
+                to:SetAtlas(atlas)
+                swaps[#swaps + 1] = { tex = to, atlas = atlas }
+            elseif from:GetTexture() then
+                to:SetTexture(from:GetTexture())
+                to:SetTexCoord(from:GetTexCoord())
+            end
+            to:SetBlendMode(from:GetBlendMode())
+            to:SetVertexColor(from:GetVertexColor())
+            to:SetShown(from:IsShown())
+        end
+    end
+    if #bars == 0 then root:Hide() return nil end
+    local textHolder = CreateFrame("Frame", nil, root)
+    textHolder:SetAllPoints(bars[1].bar)
+    textHolder:SetFrameLevel(root:GetFrameLevel() + 10)
+    root.text = textHolder:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    root.text:SetPoint("CENTER")
+    root.bars, root.swaps, root.cloned = bars, swaps, true
+    return root
+end
+
+-- one profession on a cloned bar: values, and its own name in the atlases that named the client's profession
+local function SetClonedBar(root, skill, name, rank, maxRank)
+    local mine = ATLAS_NAME[skill]
+    local function swapped(atlas)
+        if not (atlas and art and art.cardName and mine) then return atlas end
+        local s2 = atlas:gsub(art.cardName, mine)
+        return s2
+    end
+    for _, sw in ipairs(root.swaps) do
+        if sw.tex:SetAtlas(swapped(sw.atlas)) == false then sw.tex:SetAtlas(sw.atlas) end
+    end
+    if rank and maxRank and maxRank > 0 then
+        for _, b in ipairs(root.bars) do
+            b.bar:SetMinMaxValues(0, maxRank)
+            b.bar:SetValue(rank)
+            if b.atlas then
+                local fill = b.bar:GetStatusBarTexture()
+                if fill and fill:SetAtlas(swapped(b.atlas)) == false then fill:SetAtlas(b.atlas) end
+            end
+        end
+        root.text:SetText(string.format("%s %d/%d", name or "", rank, maxRank))
+        root:Show()
+    else
+        root:Hide()
+    end
+end
+
 local list, content, page
 local sections = {}
 local SECTION_GAP, SPELL_STEP = 6, 46
@@ -320,12 +427,14 @@ local function PrimarySection(i)
         sections[i] = f
     end
     f:SetWidth(sectionW)
-    f.bar:ClearAllPoints()
-    f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.min(math.floor(sectionW * 0.32), sectionW - 440 - 44), -66)
+    if f.bar.cloned ~= true then   -- a cloned bar keeps the client's own place in the section
+        f.bar:ClearAllPoints()
+        f.bar:SetPoint("TOPLEFT", f, "TOPLEFT", math.min(math.floor(sectionW * 0.32), sectionW - 440 - 44), -66)
+    end
     return f
 end
 
-local function FillPrimary(f, entry, spells)
+local function FillPrimary(f, entry, spells, p1)
     f.header:SetText(entry.name)
     for k = 1, math.max(#spells, #f.spells) do
         local b = f.spells[k]
@@ -358,7 +467,23 @@ local function FillPrimary(f, entry, spells)
     local hasCard = card and f.card:SetAtlas(card) ~= false
     f.card:SetShown(hasCard and true or false)
     f.plain:SetShown(not hasCard)
-    SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank, FillAtlas(entry.skill))
+    local model = art and p1 and BarModel(p1)
+    if model and not f.cloneTried then
+        f.cloneTried = true
+        local ok, clone = pcall(CloneBar, model, f, p1)
+        if ok and clone then
+            f.plainBar = f.bar
+            f.plainBar:Hide()
+            f.bar = clone
+            f.unlearn:ClearAllPoints()
+            f.unlearn:SetPoint("LEFT", clone, "RIGHT", 6, 0)
+        end
+    end
+    if f.bar.cloned == true then
+        SetClonedBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank)
+    else
+        SetBar(f.bar, entry.skill, entry.name, entry.rank, entry.maxRank, FillAtlas(entry.skill))
+    end
     if art and art.crossNormal and not f.unlearn.clientArt then   -- the client's red X
         f.unlearn.clientArt = true
         f.unlearn:SetSize(21, 21)
@@ -427,7 +552,7 @@ local function Refresh()
         local f = PrimarySection(n)
         f:ClearAllPoints()
         f:SetPoint("TOPLEFT", 0, -y)
-        y = y + FillPrimary(f, entry, spells) + SECTION_GAP
+        y = y + FillPrimary(f, entry, spells, p1) + SECTION_GAP
     end
     for i = n + 1, #sections do sections[i]:Hide() end
     content:SetSize(sectionW, math.max(1, y))

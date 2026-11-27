@@ -295,6 +295,57 @@ local function Tab(window, i)
     return t
 end
 
+-- Our tab's art sits exactly as on the client's tab: the anchors and sizes of its background, icon, selected overlay and
+-- highlight copied from a client tab (centring them left the art a few pixels off).
+local function MatchTabArt(model, t)
+    if t.matched == model or not model.GetRegions then return end
+    local function copy(from, to)
+        local w, h = from:GetSize()
+        if w and w > 0 then to:SetSize(w, h) end
+        if from:GetNumPoints() > 0 then
+            to:ClearAllPoints()
+            for i = 1, from:GetNumPoints() do
+                local point, relative, relativePoint, x, y = from:GetPoint(i)
+                to:SetPoint(point, (relative == model or not relative) and t or relative, relativePoint, x, y)
+            end
+        end
+    end
+    local selectedDone
+    for _, r in ipairs({ model:GetRegions() }) do
+        if r:GetObjectType() == "Texture" then
+            local atlas = r:GetAtlas()
+            if atlas == "common-sidetab" then copy(r, t.back)
+            elseif atlas == "common-sidetab-selected" and not selectedDone then copy(r, t.selected) selectedDone = true
+            elseif atlas == "common-sidetab-hover" then
+                local hl = t:GetHighlightTexture()
+                if hl then copy(r, hl) end
+            elseif not atlas and r:GetDrawLayer() == "ARTWORK" then copy(r, t.icon) end
+        end
+    end
+    t.matched = model
+end
+
+-- the client marks one of its own tabs selected even when the open profession is one of ours: its overlays are
+-- hidden then, and given back when the client's own profession is open again
+local hiddenSelected = {}
+local function ClientSelected(column, show)
+    for _, tab in ipairs(column) do
+        if tab.GetRegions then
+            for _, r in ipairs({ tab:GetRegions() }) do
+                if r:GetObjectType() == "Texture" and r:GetAtlas() == "common-sidetab-selected" then
+                    if not show and r:IsShown() then
+                        r:Hide()
+                        hiddenSelected[r] = true
+                    elseif show and hiddenSelected[r] then
+                        r:Show()
+                        hiddenSelected[r] = nil
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- the profession the window shows now (its base skill line), when the client can tell
 local function OpenSkillLine()
     if C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo then
@@ -331,13 +382,20 @@ local function RefreshTabs(window)
     end
 
     local openSkill, openName = OpenSkillLine()
+    -- on the overview page the client still names the last profession opened: nothing of ours is selected there
+    local book = type(window.BookPage) == "table" and window.BookPage or nil
+    if book and book:IsShown() then openSkill, openName = nil, nil end
+    local oursOpen = false
     local n = 0
     for _, p in ipairs(KnownProfessions()) do
         if p.cast and not ColumnHas(described, p) then   -- no tab for a profession with no window
             n = n + 1
             local t = Tab(window, n)
+            if first then pcall(MatchTabArt, first, t) end
             t.icon:SetTexture(p.icon)
-            t.selected:SetShown(openName == p.name or (openSkill ~= nil and openSkill == p.skill))
+            local selected = openName == p.name or (openSkill ~= nil and openSkill == p.skill)
+            t.selected:SetShown(selected)
+            oursOpen = oursOpen or selected
             t.name, t.rank, t.maxRank, t.cast = p.name, p.rank, p.maxRank, p.cast
             t:SetAttribute("type", "spell")
             t:SetAttribute("spell", p.cast)
@@ -347,6 +405,7 @@ local function RefreshTabs(window)
         end
     end
     for i = n + 1, #(tabs[window] or {}) do tabs[window][i]:Hide() end
+    pcall(ClientSelected, column, not oursOpen)
 
     local height = (window:GetHeight() or 600) - 2 * PAD
     local needed = #all * (size + gap) - gap
@@ -364,6 +423,18 @@ local function HookProfessionWindows()
         if window and not windowHooked[window] then
             windowHooked[window] = true
             -- the client lays out its own tabs as the window opens: place ours a frame later too
+            -- switching between the overview page and a profession keeps the window open: follow the page too
+            local book = type(window.BookPage) == "table" and window.BookPage or nil
+            if book then
+                local function follow()
+                    if window:IsShown() then
+                        RefreshTabs(window)
+                        if C_Timer and C_Timer.After then C_Timer.After(0, function() if window:IsShown() then RefreshTabs(window) end end) end
+                    end
+                end
+                book:HookScript("OnShow", follow)
+                book:HookScript("OnHide", follow)
+            end
             window:HookScript("OnShow", function(self)
                 RefreshTabs(self)
                 if C_Timer and C_Timer.After then C_Timer.After(0, function() if self:IsShown() then RefreshTabs(self) end end) end
